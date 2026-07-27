@@ -28,7 +28,7 @@ export function createSession(userId: number): { token: string; cookie: string }
     `INSERT INTO sessions (token, user_id) VALUES (?, ?)`,
     [token, userId]
   );
-  const cookie = `${SESSION_COOKIE}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${60 * 60 * 24 * 30}`;
+  const cookie = `${SESSION_COOKIE}=${token}; HttpOnly; SameSite=Lax; Secure; Path=/; Max-Age=${60 * 60 * 24 * 30}`;
   return { token, cookie };
 }
 
