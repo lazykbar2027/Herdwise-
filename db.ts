@@ -11,14 +11,32 @@ db.exec("PRAGMA foreign_keys = ON");
 
 export function initDB() {
   db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS sessions (
+      token TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS pastures (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL UNIQUE
+      user_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      UNIQUE(user_id, name),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS cattle (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      tag_number TEXT NOT NULL UNIQUE,
+      user_id INTEGER NOT NULL,
+      tag_number TEXT NOT NULL,
       breed TEXT NOT NULL DEFAULT '',
       sex TEXT NOT NULL CHECK(sex IN ('Bull', 'Cow', 'Steer', 'Heifer')),
       birth_date TEXT,
@@ -26,44 +44,43 @@ export function initDB() {
       notes TEXT DEFAULT '',
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(user_id, tag_number),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
       FOREIGN KEY (pasture_id) REFERENCES pastures(id) ON DELETE SET NULL
     );
 
     CREATE TABLE IF NOT EXISTS breeding_records (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
       cow_id INTEGER NOT NULL,
       bull_tag TEXT NOT NULL,
       breeding_date TEXT NOT NULL,
       notes TEXT DEFAULT '',
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
       FOREIGN KEY (cow_id) REFERENCES cattle(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS calves (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
       breeding_record_id INTEGER NOT NULL,
       tag_number TEXT NOT NULL,
       sex TEXT NOT NULL CHECK(sex IN ('Bull', 'Heifer')),
       birth_date TEXT NOT NULL,
       notes TEXT DEFAULT '',
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
       FOREIGN KEY (breeding_record_id) REFERENCES breeding_records(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS health_records (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
       cattle_id INTEGER NOT NULL,
       date TEXT NOT NULL,
       concern TEXT NOT NULL,
       resolved INTEGER NOT NULL DEFAULT 0,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
       FOREIGN KEY (cattle_id) REFERENCES cattle(id) ON DELETE CASCADE
     );
   `);
-
-  // Seed pastures if empty
-  const count = db.query("SELECT COUNT(*) as c FROM pastures").get() as { c: number };
-  if (count.c === 0) {
-    const insert = db.prepare("INSERT INTO pastures (name) VALUES (?)");
-    insert.run("North Pasture");
-    insert.run("South Pasture");
-    insert.run("East Pasture");
-  }
 }

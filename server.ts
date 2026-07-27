@@ -1,5 +1,6 @@
 import { db, initDB } from "./db";
 import { renderPage, escapeHTML } from "./render";
+import type { PageUser } from "./render";
 import {
   getCattleList, getCattleById, createCattle, updateCattle, deleteCattle,
   getCattleInPasture,
@@ -10,8 +11,13 @@ import {
   getBreedingRecordById, createBreedingRecord, createCalf, deleteBreedingRecord,
   getFemaleCattle, getAllCattleOptions,
   getFullExportData,
-  importCattle, getCattleByTag,
+  importCattle, getCattleByTag, getPastureByName,
 } from "./queries";
+import {
+  hashPassword, verifyPassword, createSession,
+  getUserFromSession, deleteSession,
+} from "./auth";
+import type { User } from "./auth";
 import { readFileSync, existsSync } from "node:fs";
 import { join, extname } from "node:path";
 import ExcelJS from "exceljs";
@@ -50,15 +56,16 @@ function redirect(url: string): Response {
   });
 }
 
-function htmlPage(title: string, body: string, status: number = 200): Response {
-  return new Response(renderPage(title, body), {
+function htmlPage(title: string, body: string, user?: User | null, status: number = 200): Response {
+  const pageUser: PageUser | null = user ? { email: user.email } : null;
+  return new Response(renderPage(title, body, pageUser), {
     status,
     headers: { "Content-Type": "text/html; charset=utf-8" },
   });
 }
 
-function notFound(): Response {
-  return htmlPage("Not Found", `<div class="empty-state"><p>Page not found.</p><a href="/cattle">← Back to Cattle</a></div>`, 404);
+function notFound(user?: User | null): Response {
+  return htmlPage("Not Found", `<div class="empty-state"><p>Page not found.</p><a href="/cattle">← Back to Cattle</a></div>`, user, 404);
 }
 
 function sexBadge(sex: string): string {
@@ -97,28 +104,29 @@ function cattleTableRows(cattle: CattleListRow[], showEdit: boolean = true): str
   `).join("");
 }
 
-function pastureOptions(selectedId: number | null = null): string {
-  const pastures = db.query("SELECT id, name FROM pastures ORDER BY name").all() as { id: number; name: string }[];
+function pastureOptions(userId: number, selectedId: number | null = null): string {
+  const pastures = getPastures(userId);
   return pastures.map(p =>
     `<option value="${p.id}"${selectedId === p.id ? " selected" : ""}>${escapeHTML(p.name)}</option>`
   ).join("");
 }
 
-function femaleCattleOptions(selectedId: number | null = null): string {
-  const cattle = getFemaleCattle();
+function femaleCattleOptions(userId: number, selectedId: number | null = null): string {
+  const cattle = getFemaleCattle(userId);
   return cattle.map(c =>
     `<option value="${c.id}"${selectedId === c.id ? " selected" : ""}>${escapeHTML(c.tag_number)} (${escapeHTML(c.sex)})</option>`
   ).join("");
 }
 
-function allCattleOptions(selectedId: number | null = null): string {
-  const cattle = getAllCattleOptions();
+function allCattleOptions(userId: number, selectedId: number | null = null): string {
+  const cattle = getAllCattleOptions(userId);
   return cattle.map(c =>
     `<option value="${c.id}"${selectedId === c.id ? " selected" : ""}>${escapeHTML(c.tag_number)} (${escapeHTML(c.sex)})</option>`
   ).join("");
 }
 
 function cattleFormHTML(
+  user: User,
   action: string,
   defaults: { tag_number?: string; breed?: string; sex?: string; birth_date?: string; pasture_id?: number | null; notes?: string; } = {},
   error?: string,
@@ -154,7 +162,7 @@ function cattleFormHTML(
       <label for="pasture_id">Pasture</label>
       <select id="pasture_id" name="pasture_id">
         <option value="">— None —</option>
-        ${pastureOptions(defaults.pasture_id ?? null)}
+        ${pastureOptions(user.id, defaults.pasture_id ?? null)}
       </select>
 
       <label for="notes">Notes</label>
@@ -177,8 +185,8 @@ function cattleFormHTML(
 
 // ─── Import Helpers ────────────────────────────────────────────────────
 
-// In-memory storage for previewed import data (single-user app)
-let previewData: ImportRecord[] = [];
+// In-memory storage for previewed import data, keyed by user ID
+const previewDataByUser = new Map<number, ImportRecord[]>();
 
 interface ImportRecord {
   tag_number: string;
@@ -296,10 +304,181 @@ function normalizeSex(raw: string): string {
   return cleaned; // pass through for validation
 }
 
+// ─── Auth Route Handlers ─────────────────────────────────────────────
+
+function handleLoginPage(error?: string, redirectTo?: string, user?: User | null): Response {
+  // If already logged in, redirect to /cattle
+  if (user) return redirect("/cattle");
+
+  let body = `<div class="auth-page"><div class="auth-card">`;
+  body += `<h2>🔐 Login</h2>`;
+  body += `<p class="auth-subtitle">Sign in to CattleTrackerMt</p>`;
+
+  if (error) {
+    body += `<div class="alert alert-error">${escapeHTML(error)}</div>`;
+  }
+
+  body += `
+    <form method="POST" action="/login" class="auth-form">
+      <input type="hidden" name="redirect" value="${escapeHTML(redirectTo || "")}">
+      <label for="email">Email</label>
+      <input type="email" id="email" name="email" required autofocus placeholder="you@ranch.com">
+
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" required placeholder="Your password">
+
+      <div class="form-actions">
+        <button type="submit" class="btn">Login</button>
+      </div>
+    </form>
+
+    <p class="auth-links">
+      Don't have an account? <a href="/register">Register here</a>
+    </p>
+  `;
+
+  body += `</div></div>`;
+  return htmlPage("Login", body, null);
+}
+
+function handleRegisterPage(error?: string, defaults?: { email?: string }, user?: User | null): Response {
+  // If already logged in, redirect to /cattle
+  if (user) return redirect("/cattle");
+
+  let body = `<div class="auth-page"><div class="auth-card">`;
+  body += `<h2>📝 Register</h2>`;
+  body += `<p class="auth-subtitle">Create your CattleTrackerMt account</p>`;
+
+  if (error) {
+    body += `<div class="alert alert-error">${escapeHTML(error)}</div>`;
+  }
+
+  body += `
+    <form method="POST" action="/register" class="auth-form">
+      <label for="email">Email</label>
+      <input type="email" id="email" name="email" required autofocus
+             value="${escapeHTML(defaults?.email || "")}" placeholder="you@ranch.com">
+
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" required minlength="6"
+             placeholder="At least 6 characters">
+
+      <label for="confirm_password">Confirm Password</label>
+      <input type="password" id="confirm_password" name="confirm_password" required
+             placeholder="Type it again">
+
+      <div class="form-actions">
+        <button type="submit" class="btn">Create Account</button>
+      </div>
+    </form>
+
+    <p class="auth-links">
+      Already have an account? <a href="/login">Login here</a>
+    </p>
+  `;
+
+  body += `</div></div>`;
+  return htmlPage("Register", body, null);
+}
+
+async function handleLoginPost(req: Request): Promise<Response> {
+  const formData = await req.formData();
+  const email = formData.get("email")?.toString().trim().toLowerCase();
+  const password = formData.get("password")?.toString();
+  const redirectTo = formData.get("redirect")?.toString() || "/cattle";
+
+  if (!email || !password) {
+    return handleLoginPage("Email and password are required.", redirectTo);
+  }
+
+  const userRow = db.query(`SELECT id, email, password_hash FROM users WHERE email = ?`).get(email) as { id: number; email: string; password_hash: string } | null;
+
+  if (!userRow) {
+    return handleLoginPage("Invalid email or password.", redirectTo);
+  }
+
+  const valid = await verifyPassword(password, userRow.password_hash);
+  if (!valid) {
+    return handleLoginPage("Invalid email or password.", redirectTo);
+  }
+
+  const { cookie } = createSession(userRow.id);
+
+  // Sanitize redirect to prevent open redirect attacks
+  const safeRedirect = redirectTo.startsWith("/") ? redirectTo : "/cattle";
+
+  return new Response(null, {
+    status: 302,
+    headers: {
+      Location: safeRedirect,
+      "Set-Cookie": cookie,
+    },
+  });
+}
+
+async function handleRegisterPost(req: Request): Promise<Response> {
+  const formData = await req.formData();
+  const email = formData.get("email")?.toString().trim().toLowerCase();
+  const password = formData.get("password")?.toString();
+  const confirmPassword = formData.get("confirm_password")?.toString();
+
+  if (!email || !password) {
+    return handleRegisterPage("Email and password are required.", { email });
+  }
+
+  if (!email.includes("@") || email.length < 3) {
+    return handleRegisterPage("Please enter a valid email address.", { email });
+  }
+
+  if (password.length < 6) {
+    return handleRegisterPage("Password must be at least 6 characters.", { email });
+  }
+
+  if (password !== confirmPassword) {
+    return handleRegisterPage("Passwords do not match.", { email });
+  }
+
+  // Check if user already exists
+  const existing = db.query(`SELECT id FROM users WHERE email = ?`).get(email);
+  if (existing) {
+    return handleRegisterPage("An account with that email already exists.", { email: "" });
+  }
+
+  const passwordHash = await hashPassword(password);
+
+  try {
+    const result = db.run(`INSERT INTO users (email, password_hash) VALUES (?, ?)`, [email, passwordHash]);
+    const userId = Number(result.lastInsertRowid);
+    const { cookie } = createSession(userId);
+
+    return new Response(null, {
+      status: 302,
+      headers: {
+        Location: "/cattle",
+        "Set-Cookie": cookie,
+      },
+    });
+  } catch (err: any) {
+    if (err.message?.includes("UNIQUE")) {
+      return handleRegisterPage("An account with that email already exists.", { email: "" });
+    }
+    throw err;
+  }
+}
+
+function handleLogout(req: Request): Response {
+  const clearCookie = deleteSession(req);
+  const headers: Record<string, string> = { Location: "/login" };
+  if (clearCookie) {
+    headers["Set-Cookie"] = clearCookie;
+  }
+  return new Response(null, { status: 302, headers });
+}
+
 // ─── Cattle List ──────────────────────────────────────────────────────
 
-function handleCattleList(search?: string, addedTag?: string | null, importSummary?: { imported: number; skipped: number; skippedDetails?: string }): Response {
-  const cattle = getCattleList(search);
+function handleCattleList(user: User, search?: string, addedTag?: string | null, importSummary?: { imported: number; skipped: number; skippedDetails?: string }): Response {
+  const cattle = getCattleList(user.id, search);
 
   let banner = "";
   if (addedTag) {
@@ -367,25 +546,25 @@ function handleCattleList(search?: string, addedTag?: string | null, importSumma
     `;
   }
 
-  return htmlPage("Cattle", body);
+  return htmlPage("Cattle", body, user);
 }
 
 // ─── Cattle Add Form ──────────────────────────────────────────────────
 
-function handleCattleAddForm(error?: string, defaults?: Record<string, string>): Response {
-  return htmlPage("Add Cattle", cattleFormHTML("/cattle", {
+function handleCattleAddForm(user: User, error?: string, defaults?: Record<string, string>): Response {
+  return htmlPage("Add Cattle", cattleFormHTML(user, "/cattle", {
     tag_number: defaults?.tag_number || "",
     breed: defaults?.breed || "",
     sex: defaults?.sex || "",
     birth_date: defaults?.birth_date || "",
     pasture_id: defaults?.pasture_id ? parseInt(defaults.pasture_id, 10) : null,
     notes: defaults?.notes || "",
-  }, error));
+  }, error), user);
 }
 
 // ─── Cattle Create ────────────────────────────────────────────────────
 
-async function handleCattleCreate(req: Request): Promise<Response> {
+async function handleCattleCreate(user: User, req: Request): Promise<Response> {
   const formData = await req.formData();
   const tag_number = formData.get("tag_number")?.toString().trim();
   const breed = formData.get("breed")?.toString().trim() || "";
@@ -396,7 +575,7 @@ async function handleCattleCreate(req: Request): Promise<Response> {
 
   // Validate required fields
   if (!tag_number || !sex) {
-    return handleCattleAddForm("Tag number and sex are required.", {
+    return handleCattleAddForm(user, "Tag number and sex are required.", {
       tag_number: tag_number || "",
       breed,
       sex: sex || "",
@@ -408,7 +587,7 @@ async function handleCattleCreate(req: Request): Promise<Response> {
 
   const validSexes = ["Bull", "Cow", "Steer", "Heifer"];
   if (!validSexes.includes(sex)) {
-    return handleCattleAddForm("Invalid sex value.", {
+    return handleCattleAddForm(user, "Invalid sex value.", {
       tag_number,
       breed,
       sex,
@@ -421,10 +600,10 @@ async function handleCattleCreate(req: Request): Promise<Response> {
   const pasture_id = pasture_id_raw ? parseInt(pasture_id_raw, 10) : null;
 
   try {
-    createCattle({ tag_number, breed, sex, birth_date, pasture_id, notes });
+    createCattle(user.id, { tag_number, breed, sex, birth_date, pasture_id, notes });
   } catch (err: any) {
     if (err.message?.includes("UNIQUE")) {
-      return handleCattleAddForm(`A cattle with tag number "${tag_number}" already exists.`, {
+      return handleCattleAddForm(user, `A cattle with tag number "${tag_number}" already exists.`, {
         tag_number: "",
         breed,
         sex,
@@ -441,12 +620,12 @@ async function handleCattleCreate(req: Request): Promise<Response> {
 
 // ─── Cattle Detail ────────────────────────────────────────────────────
 
-function handleCattleDetail(id: number): Response {
-  const cattle = getCattleById(id);
-  if (!cattle) return notFound();
+function handleCattleDetail(user: User, id: number): Response {
+  const cattle = getCattleById(user.id, id);
+  if (!cattle) return notFound(user);
 
-  const healthRecords = getHealthRecordsForCattle(id);
-  const breedingRecords = getBreedingRecordsForCattle(id);
+  const healthRecords = getHealthRecordsForCattle(user.id, id);
+  const breedingRecords = getBreedingRecordsForCattle(user.id, id);
 
   let body = "";
 
@@ -521,16 +700,17 @@ function handleCattleDetail(id: number): Response {
   }
   body += `</div>`;
 
-  return htmlPage(cattle.tag_number, body);
+  return htmlPage(cattle.tag_number, body, user);
 }
 
 // ─── Cattle Edit Form ─────────────────────────────────────────────────
 
-function handleCattleEditForm(id: number, error?: string): Response {
-  const cattle = getCattleById(id);
-  if (!cattle) return notFound();
+function handleCattleEditForm(user: User, id: number, error?: string): Response {
+  const cattle = getCattleById(user.id, id);
+  if (!cattle) return notFound(user);
 
   return htmlPage(`Edit ${cattle.tag_number}`, cattleFormHTML(
+    user,
     `/cattle/${id}`,
     {
       tag_number: cattle.tag_number,
@@ -543,14 +723,14 @@ function handleCattleEditForm(id: number, error?: string): Response {
     error,
     true,
     `/cattle/${id}/delete`
-  ));
+  ), user);
 }
 
 // ─── Cattle Update ────────────────────────────────────────────────────
 
-async function handleCattleUpdate(req: Request, id: number): Promise<Response> {
-  const cattle = getCattleById(id);
-  if (!cattle) return notFound();
+async function handleCattleUpdate(user: User, req: Request, id: number): Promise<Response> {
+  const cattle = getCattleById(user.id, id);
+  if (!cattle) return notFound(user);
 
   const formData = await req.formData();
   const tag_number = formData.get("tag_number")?.toString().trim();
@@ -561,21 +741,21 @@ async function handleCattleUpdate(req: Request, id: number): Promise<Response> {
   const notes = formData.get("notes")?.toString().trim() || "";
 
   if (!tag_number || !sex) {
-    return handleCattleEditForm(id, "Tag number and sex are required.");
+    return handleCattleEditForm(user, id, "Tag number and sex are required.");
   }
 
   const validSexes = ["Bull", "Cow", "Steer", "Heifer"];
   if (!validSexes.includes(sex)) {
-    return handleCattleEditForm(id, "Invalid sex value.");
+    return handleCattleEditForm(user, id, "Invalid sex value.");
   }
 
   const pasture_id = pasture_id_raw ? parseInt(pasture_id_raw, 10) : null;
 
   try {
-    updateCattle(id, { tag_number, breed, sex, birth_date, pasture_id, notes });
+    updateCattle(user.id, id, { tag_number, breed, sex, birth_date, pasture_id, notes });
   } catch (err: any) {
     if (err.message?.includes("UNIQUE")) {
-      return handleCattleEditForm(id, `Tag number "${tag_number}" is already in use by another animal.`);
+      return handleCattleEditForm(user, id, `Tag number "${tag_number}" is already in use by another animal.`);
     }
     throw err;
   }
@@ -585,19 +765,19 @@ async function handleCattleUpdate(req: Request, id: number): Promise<Response> {
 
 // ─── Cattle Delete ────────────────────────────────────────────────────
 
-function handleCattleDelete(id: number): Response {
-  const cattle = getCattleById(id);
+function handleCattleDelete(user: User, id: number): Response {
+  const cattle = getCattleById(user.id, id);
   if (!cattle) {
     return redirect("/cattle");
   }
-  deleteCattle(id);
+  deleteCattle(user.id, id);
   return redirect(`/cattle?deleted=${encodeURIComponent(cattle.tag_number)}`);
 }
 
 // ─── Pasture List ─────────────────────────────────────────────────────
 
-function handlePasturesList(): Response {
-  const pastures = getPastures();
+function handlePasturesList(user: User): Response {
+  const pastures = getPastures(user.id);
 
   let body = "";
 
@@ -639,12 +819,12 @@ function handlePasturesList(): Response {
     body += `</tbody></table></div>`;
   }
 
-  return htmlPage("Pastures", body);
+  return htmlPage("Pastures", body, user);
 }
 
 // ─── Pasture Create ───────────────────────────────────────────────────
 
-async function handlePastureCreate(req: Request): Promise<Response> {
+async function handlePastureCreate(user: User, req: Request): Promise<Response> {
   const formData = await req.formData();
   const name = formData.get("name")?.toString().trim();
 
@@ -653,7 +833,7 @@ async function handlePastureCreate(req: Request): Promise<Response> {
   }
 
   try {
-    createPasture(name);
+    createPasture(user.id, name);
   } catch (err: any) {
     // UNIQUE constraint — duplicate name, just redirect silently
     if (err.message?.includes("UNIQUE")) {
@@ -667,29 +847,27 @@ async function handlePastureCreate(req: Request): Promise<Response> {
 
 // ─── Pasture Delete ───────────────────────────────────────────────────
 
-function handlePastureDelete(id: number): Response {
-  if (!isPastureEmpty(id)) {
-    // Show error — can't delete pasture with cattle
-    const pastures = getPastures();
-    const pasture = getPastureById(id);
+function handlePastureDelete(user: User, id: number): Response {
+  if (!isPastureEmpty(user.id, id)) {
+    const pasture = getPastureById(user.id, id);
     const name = pasture?.name || "Unknown";
 
-    let body = `<div class="alert alert-error">Cannot delete "${escapeHTML(name)}": ${pastures.find(p => p.id === id)?.cattle_count || 0} cattle are still assigned to this pasture.</div>`;
+    let body = `<div class="alert alert-error">Cannot delete "${escapeHTML(name)}": cattle are still assigned to this pasture.</div>`;
     body += `<p class="mt-1"><a href="/pastures">← Back to Pastures</a></p>`;
-    return htmlPage("Error", body);
+    return htmlPage("Error", body, user);
   }
 
-  deletePasture(id);
+  deletePasture(user.id, id);
   return redirect("/pastures");
 }
 
 // ─── Pasture Detail ───────────────────────────────────────────────────
 
-function handlePastureDetail(id: number, search?: string): Response {
-  const pasture = getPastureById(id);
-  if (!pasture) return notFound();
+function handlePastureDetail(user: User, id: number, search?: string): Response {
+  const pasture = getPastureById(user.id, id);
+  if (!pasture) return notFound(user);
 
-  const cattle = getCattleInPasture(id, search);
+  const cattle = getCattleInPasture(user.id, id, search);
 
   let body = "";
 
@@ -731,13 +909,13 @@ function handlePastureDetail(id: number, search?: string): Response {
     `;
   }
 
-  return htmlPage(pasture.name, body);
+  return htmlPage(pasture.name, body, user);
 }
 
 // ─── Health Overview ──────────────────────────────────────────────────
 
-function handleHealthOverview(showForm: boolean = false, error?: string, defaults?: Record<string, string>): Response {
-  const records = getHealthRecords();
+function handleHealthOverview(user: User, showForm: boolean = false, error?: string, defaults?: Record<string, string>): Response {
+  const records = getHealthRecords(user.id);
 
   let body = "";
 
@@ -753,7 +931,7 @@ function handleHealthOverview(showForm: boolean = false, error?: string, default
 
   // Show inline form if requested
   if (showForm) {
-    const cattleCount = getAllCattleOptions().length;
+    const cattleCount = getAllCattleOptions(user.id).length;
     if (cattleCount === 0) {
       body += `<div class="alert alert-error">No cattle recorded yet. <a href="/cattle/add">Add cattle</a> first.</div>`;
     } else {
@@ -764,7 +942,7 @@ function handleHealthOverview(showForm: boolean = false, error?: string, default
           <label for="cattle_id">Cattle *</label>
           <select id="cattle_id" name="cattle_id" required>
             <option value="">— Select Cattle —</option>
-            ${allCattleOptions(defaults?.cattle_id ? parseInt(defaults.cattle_id, 10) : null)}
+            ${allCattleOptions(user.id, defaults?.cattle_id ? parseInt(defaults.cattle_id, 10) : null)}
           </select>
 
           <label for="date">Date *</label>
@@ -825,12 +1003,12 @@ function handleHealthOverview(showForm: boolean = false, error?: string, default
     body += `</tbody></table></div>`;
   }
 
-  return htmlPage("Health Records", body);
+  return htmlPage("Health Records", body, user);
 }
 
 // ─── Health Create ────────────────────────────────────────────────────
 
-async function handleHealthCreate(req: Request): Promise<Response> {
+async function handleHealthCreate(user: User, req: Request): Promise<Response> {
   const formData = await req.formData();
   const cattle_id_raw = formData.get("cattle_id")?.toString().trim();
   const date = formData.get("date")?.toString().trim();
@@ -838,7 +1016,7 @@ async function handleHealthCreate(req: Request): Promise<Response> {
   const resolved = formData.get("resolved") === "1" ? 1 : 0;
 
   if (!cattle_id_raw || !date || !concern) {
-    return handleHealthOverview(true, "Cattle, Date, and Concern are required.", {
+    return handleHealthOverview(user, true, "Cattle, Date, and Concern are required.", {
       cattle_id: cattle_id_raw || "",
       date: date || "",
       concern: concern || "",
@@ -847,28 +1025,28 @@ async function handleHealthCreate(req: Request): Promise<Response> {
   }
 
   const cattle_id = parseInt(cattle_id_raw, 10);
-  createHealthRecord(cattle_id, date, concern, resolved);
+  createHealthRecord(user.id, cattle_id, date, concern, resolved);
   return redirect("/health");
 }
 
 // ─── Health Toggle ────────────────────────────────────────────────────
 
-function handleHealthToggle(id: number): Response {
-  toggleHealthRecord(id);
+function handleHealthToggle(user: User, id: number): Response {
+  toggleHealthRecord(user.id, id);
   return redirect("/health");
 }
 
 // ─── Health Delete ────────────────────────────────────────────────────
 
-function handleHealthDelete(id: number): Response {
-  deleteHealthRecord(id);
+function handleHealthDelete(user: User, id: number): Response {
+  deleteHealthRecord(user.id, id);
   return redirect("/health");
 }
 
 // ─── Breeding Overview ────────────────────────────────────────────────
 
-function handleBreedingOverview(showForm: boolean = false, error?: string, defaults?: Record<string, string>): Response {
-  const records = getBreedingRecords();
+function handleBreedingOverview(user: User, showForm: boolean = false, error?: string, defaults?: Record<string, string>): Response {
+  const records = getBreedingRecords(user.id);
 
   let body = "";
 
@@ -884,7 +1062,7 @@ function handleBreedingOverview(showForm: boolean = false, error?: string, defau
 
   // Show inline form if requested
   if (showForm) {
-    const femaleCount = getFemaleCattle().length;
+    const femaleCount = getFemaleCattle(user.id).length;
     if (femaleCount === 0) {
       body += `<div class="alert alert-error">No female cattle recorded yet. <a href="/cattle/add">Add a Cow or Heifer</a> first.</div>`;
     } else {
@@ -895,7 +1073,7 @@ function handleBreedingOverview(showForm: boolean = false, error?: string, defau
           <label for="cow_id">Cow *</label>
           <select id="cow_id" name="cow_id" required>
             <option value="">— Select a Cow or Heifer —</option>
-            ${femaleCattleOptions(defaults?.cow_id ? parseInt(defaults.cow_id, 10) : null)}
+            ${femaleCattleOptions(user.id, defaults?.cow_id ? parseInt(defaults.cow_id, 10) : null)}
           </select>
 
           <label for="bull_tag">Bull Tag *</label>
@@ -953,12 +1131,12 @@ function handleBreedingOverview(showForm: boolean = false, error?: string, defau
     body += `</tbody></table></div>`;
   }
 
-  return htmlPage("Breeding Records", body);
+  return htmlPage("Breeding Records", body, user);
 }
 
 // ─── Breeding Create ──────────────────────────────────────────────────
 
-async function handleBreedingCreate(req: Request): Promise<Response> {
+async function handleBreedingCreate(user: User, req: Request): Promise<Response> {
   const formData = await req.formData();
   const cow_id_raw = formData.get("cow_id")?.toString().trim();
   const bull_tag = formData.get("bull_tag")?.toString().trim();
@@ -966,7 +1144,7 @@ async function handleBreedingCreate(req: Request): Promise<Response> {
   const notes = formData.get("notes")?.toString().trim() || "";
 
   if (!cow_id_raw || !bull_tag || !breeding_date) {
-    return handleBreedingOverview(true, "Cow, Bull Tag, and Breeding Date are required.", {
+    return handleBreedingOverview(user, true, "Cow, Bull Tag, and Breeding Date are required.", {
       cow_id: cow_id_raw || "",
       bull_tag: bull_tag || "",
       breeding_date: breeding_date || "",
@@ -975,21 +1153,21 @@ async function handleBreedingCreate(req: Request): Promise<Response> {
   }
 
   const cow_id = parseInt(cow_id_raw, 10);
-  createBreedingRecord(cow_id, bull_tag, breeding_date, notes);
+  createBreedingRecord(user.id, cow_id, bull_tag, breeding_date, notes);
   return redirect("/breeding");
 }
 
 // ─── Add Calf Form ────────────────────────────────────────────────────
 
-function handleCalfForm(breedingId: number, error?: string, defaults?: Record<string, string>): Response {
-  const record = getBreedingRecordById(breedingId);
-  if (!record) return notFound();
+function handleCalfForm(user: User, breedingId: number, error?: string, defaults?: Record<string, string>): Response {
+  const record = getBreedingRecordById(user.id, breedingId);
+  if (!record) return notFound(user);
 
   if (record.calf_tag) {
     return htmlPage("Calf Already Recorded", `
       <div class="alert alert-error">A calf (${escapeHTML(record.calf_tag)}) has already been recorded for this breeding.</div>
       <p class="mt-1"><a href="/breeding">← Back to Breeding Records</a></p>
-    `);
+    `, user);
   }
 
   let body = `<h2>Add Calf for ${escapeHTML(record.cow_tag)} × ${escapeHTML(record.bull_tag)}</h2>`;
@@ -1026,14 +1204,14 @@ function handleCalfForm(breedingId: number, error?: string, defaults?: Record<st
     </form>
   `;
 
-  return htmlPage("Add Calf", body);
+  return htmlPage("Add Calf", body, user);
 }
 
 // ─── Calf Create ──────────────────────────────────────────────────────
 
-async function handleCalfCreate(req: Request, breedingId: number): Promise<Response> {
-  const record = getBreedingRecordById(breedingId);
-  if (!record) return notFound();
+async function handleCalfCreate(user: User, req: Request, breedingId: number): Promise<Response> {
+  const record = getBreedingRecordById(user.id, breedingId);
+  if (!record) return notFound(user);
 
   if (record.calf_tag) {
     return redirect("/breeding");
@@ -1046,7 +1224,7 @@ async function handleCalfCreate(req: Request, breedingId: number): Promise<Respo
   const notes = formData.get("notes")?.toString().trim() || "";
 
   if (!tag_number || !sex || !birth_date) {
-    return handleCalfForm(breedingId, "Tag number, sex, and birth date are required.", {
+    return handleCalfForm(user, breedingId, "Tag number, sex, and birth date are required.", {
       tag_number: tag_number || "",
       sex: sex || "",
       birth_date: birth_date || "",
@@ -1055,7 +1233,7 @@ async function handleCalfCreate(req: Request, breedingId: number): Promise<Respo
   }
 
   if (sex !== "Bull" && sex !== "Heifer") {
-    return handleCalfForm(breedingId, "Sex must be Bull or Heifer.", {
+    return handleCalfForm(user, breedingId, "Sex must be Bull or Heifer.", {
       tag_number,
       sex: "",
       birth_date,
@@ -1064,10 +1242,10 @@ async function handleCalfCreate(req: Request, breedingId: number): Promise<Respo
   }
 
   try {
-    createCalf(breedingId, tag_number, sex, birth_date, notes);
+    createCalf(user.id, breedingId, tag_number, sex, birth_date, notes);
   } catch (err: any) {
     if (err.message?.includes("UNIQUE")) {
-      return handleCalfForm(breedingId, `A calf with tag "${tag_number}" already exists.`, {
+      return handleCalfForm(user, breedingId, `A calf with tag "${tag_number}" already exists.`, {
         tag_number: "",
         sex,
         birth_date,
@@ -1082,14 +1260,14 @@ async function handleCalfCreate(req: Request, breedingId: number): Promise<Respo
 
 // ─── Breeding Delete ──────────────────────────────────────────────────
 
-function handleBreedingDelete(id: number): Response {
-  deleteBreedingRecord(id);
+function handleBreedingDelete(user: User, id: number): Response {
+  deleteBreedingRecord(user.id, id);
   return redirect("/breeding");
 }
 
 // ─── Export ───────────────────────────────────────────────────────────
 
-function handleExport(): Response {
+function handleExport(user: User): Response {
   let body = "";
 
   body += `
@@ -1110,14 +1288,14 @@ function handleExport(): Response {
     </div>
   `;
 
-  return htmlPage("Export", body);
+  return htmlPage("Export", body, user);
 }
 
 // ─── Export Download ───────────────────────────────────────────────────
 
-async function handleExportDownload(): Promise<Response> {
+async function handleExportDownload(user: User): Promise<Response> {
   const today = new Date().toISOString().split("T")[0];
-  const data = getFullExportData();
+  const data = getFullExportData(user.id);
 
   const workbook = new ExcelJS.Workbook();
 
@@ -1236,7 +1414,7 @@ async function handleExportDownload(): Promise<Response> {
 
 // ─── Import Upload Page ────────────────────────────────────────────────
 
-function handleImportPage(error?: string): Response {
+function handleImportPage(user: User, error?: string): Response {
   let body = `<div class="import-page">`;
 
   if (error) {
@@ -1277,28 +1455,28 @@ function handleImportPage(error?: string): Response {
 
   body += `</div>`;
 
-  return htmlPage("Import Cattle", body);
+  return htmlPage("Import Cattle", body, user);
 }
 
 // ─── Import Preview ───────────────────────────────────────────────────
 
-async function handleImportPreview(req: Request): Promise<Response> {
+async function handleImportPreview(user: User, req: Request): Promise<Response> {
   let formData: FormData;
   try {
     formData = await req.formData();
   } catch {
-    return handleImportPage("Failed to read uploaded file.");
+    return handleImportPage(user, "Failed to read uploaded file.");
   }
 
   const file = formData.get("file");
   if (!file || !(file instanceof File)) {
-    return handleImportPage("Please select a file to upload.");
+    return handleImportPage(user, "Please select a file to upload.");
   }
 
   const filename = file.name || "upload.xlsx";
   const lower = filename.toLowerCase();
   if (!lower.endsWith(".xlsx") && !lower.endsWith(".csv")) {
-    return handleImportPage("Unsupported file type. Please upload a .xlsx or .csv file.");
+    return handleImportPage(user, "Unsupported file type. Please upload a .xlsx or .csv file.");
   }
 
   let rows: string[][];
@@ -1306,11 +1484,11 @@ async function handleImportPreview(req: Request): Promise<Response> {
     const buffer = await file.arrayBuffer();
     rows = await parseFile(buffer, filename);
   } catch (err: any) {
-    return handleImportPage(`Failed to parse file: ${err.message || "Unknown error"}`);
+    return handleImportPage(user, `Failed to parse file: ${err.message || "Unknown error"}`);
   }
 
   if (rows.length === 0) {
-    return handleImportPage("File contains no data. Please check the file and try again.");
+    return handleImportPage(user, "File contains no data. Please check the file and try again.");
   }
 
   // First row is headers
@@ -1326,7 +1504,7 @@ async function handleImportPreview(req: Request): Promise<Response> {
   // Check that we have tag_number mapped
   const hasTagColumn = Object.values(columnMap).includes("tag_number");
   if (!hasTagColumn) {
-    return handleImportPage("Could not find a 'Tag Number' column. Please include a column labeled Tag Number, Tag #, tag_number, tag, or ID.");
+    return handleImportPage(user, "Could not find a 'Tag Number' column. Please include a column labeled Tag Number, Tag #, tag_number, tag, or ID.");
   }
 
   // Parse data rows
@@ -1362,7 +1540,7 @@ async function handleImportPreview(req: Request): Promise<Response> {
     record.errors = validateRecord(record);
 
     // Check for duplicate tags in the database
-    if (record.tag_number && getCattleByTag(record.tag_number)) {
+    if (record.tag_number && getCattleByTag(user.id, record.tag_number)) {
       record.errors.push(`Tag "${record.tag_number}" already exists in the database`);
     }
 
@@ -1375,8 +1553,8 @@ async function handleImportPreview(req: Request): Promise<Response> {
     records.push(record);
   }
 
-  // Store in memory for the import step
-  previewData = records;
+  // Store in memory for the import step, per user
+  previewDataByUser.set(user.id, records);
 
   // Build HTML preview
   let body = `<div class="import-page">`;
@@ -1440,12 +1618,13 @@ async function handleImportPreview(req: Request): Promise<Response> {
 
   body += `</div></div>`;
 
-  return htmlPage("Preview Import", body);
+  return htmlPage("Preview Import", body, user);
 }
 
 // ─── Import Execute ───────────────────────────────────────────────────
 
-function handleImportExecute(): Response {
+function handleImportExecute(user: User): Response {
+  const previewData = previewDataByUser.get(user.id) || [];
   if (previewData.length === 0) {
     return redirect("/import");
   }
@@ -1453,8 +1632,8 @@ function handleImportExecute(): Response {
   const validRecords = previewData.filter(r => r.errors.length === 0);
   const skipped = previewData.filter(r => r.errors.length > 0);
 
-  // Resolve pasture names to IDs
-  const pastures = db.query("SELECT id, name FROM pastures").all() as { id: number; name: string }[];
+  // Resolve pasture names to IDs for this user
+  const pastures = getPastures(user.id);
   const pastureMap = new Map<string, number>();
   for (const p of pastures) {
     pastureMap.set(p.name.toLowerCase(), p.id);
@@ -1475,7 +1654,7 @@ function handleImportExecute(): Response {
     };
   });
 
-  const result = importCattle(toImport);
+  const result = importCattle(user.id, toImport);
 
   // Collect all skipped reasons
   const allSkipped = [
@@ -1490,14 +1669,14 @@ function handleImportExecute(): Response {
   params.set("imported", String(imported));
   params.set("skipped", String(allSkipped.length));
 
-  // Pass skipped details via a comma-encoded format (simple approach)
+  // Pass skipped details
   if (allSkipped.length > 0) {
     const skippedDetails = allSkipped.map(s => `${s.tag}: ${s.reason}`).join("||");
     params.set("skipped_details", skippedDetails);
   }
 
-  // Clear preview data
-  previewData = [];
+  // Clear preview data for this user
+  previewDataByUser.delete(user.id);
 
   return redirect(`/cattle?${params.toString()}`);
 }
@@ -1517,6 +1696,29 @@ const server = Bun.serve({
       return serveStatic(staticPath) ?? new Response("Not Found", { status: 404 });
     }
 
+    // ── Public routes (no auth required) ──
+
+    if (method === "GET") {
+      // Already-authenticated check for these pages
+      const currentUser = getUserFromSession(req);
+
+      if (pathname === "/login") return handleLoginPage(undefined, url.searchParams.get("redirect") || undefined, currentUser);
+      if (pathname === "/register") return handleRegisterPage(undefined, undefined, currentUser);
+    }
+
+    if (method === "POST") {
+      if (pathname === "/login") return handleLoginPost(req);
+      if (pathname === "/register") return handleRegisterPost(req);
+      if (pathname === "/logout") return handleLogout(req);
+    }
+
+    // ── Protected routes ──
+
+    const user = getUserFromSession(req);
+    if (!user) {
+      return redirect(`/login?redirect=${encodeURIComponent(pathname + url.search)}`);
+    }
+
     // GET routes
     if (method === "GET") {
       if (pathname === "/") return redirect("/cattle");
@@ -1529,73 +1731,77 @@ const server = Bun.serve({
           skippedDetails: url.searchParams.get("skipped_details") || undefined,
         } : undefined;
         return handleCattleList(
+          user,
           url.searchParams.get("search") || undefined,
           url.searchParams.get("added"),
           importSummary
         );
       }
-      if (pathname === "/cattle/add") return handleCattleAddForm();
-      if (pathname === "/pastures") return handlePasturesList();
+      if (pathname === "/cattle/add") return handleCattleAddForm(user);
+      if (pathname === "/pastures") return handlePasturesList(user);
       if (pathname === "/health") return handleHealthOverview(
+        user,
         url.searchParams.get("form") === "1",
       );
       if (pathname === "/breeding") return handleBreedingOverview(
+        user,
         url.searchParams.get("form") === "1",
       );
-      if (pathname === "/export") return handleExport();
-      if (pathname === "/export/download") return await handleExportDownload();
-      if (pathname === "/import") return handleImportPage();
+      if (pathname === "/export") return handleExport(user);
+      if (pathname === "/export/download") return await handleExportDownload(user);
+      if (pathname === "/import") return handleImportPage(user);
 
       // Dynamic GET routes
       const cattleDetailMatch = pathname.match(/^\/cattle\/(\d+)$/);
-      if (cattleDetailMatch) return handleCattleDetail(parseInt(cattleDetailMatch[1]!, 10));
+      if (cattleDetailMatch) return handleCattleDetail(user, parseInt(cattleDetailMatch[1]!, 10));
 
       const cattleEditMatch = pathname.match(/^\/cattle\/(\d+)\/edit$/);
-      if (cattleEditMatch) return handleCattleEditForm(parseInt(cattleEditMatch[1]!, 10));
+      if (cattleEditMatch) return handleCattleEditForm(user, parseInt(cattleEditMatch[1]!, 10));
 
       const pastureDetailMatch = pathname.match(/^\/pastures\/(\d+)$/);
       if (pastureDetailMatch) return handlePastureDetail(
+        user,
         parseInt(pastureDetailMatch[1]!, 10),
         url.searchParams.get("search") || undefined
       );
 
       const calfFormMatch = pathname.match(/^\/breeding\/(\d+)\/calf$/);
-      if (calfFormMatch) return handleCalfForm(parseInt(calfFormMatch[1]!, 10));
+      if (calfFormMatch) return handleCalfForm(user, parseInt(calfFormMatch[1]!, 10));
     }
 
     // POST routes
     if (method === "POST") {
-      if (pathname === "/cattle") return handleCattleCreate(req);
-      if (pathname === "/pastures") return handlePastureCreate(req);
-      if (pathname === "/breeding") return handleBreedingCreate(req);
-      if (pathname === "/health") return handleHealthCreate(req);
+      if (pathname === "/cattle") return handleCattleCreate(user, req);
+      if (pathname === "/pastures") return handlePastureCreate(user, req);
+      if (pathname === "/breeding") return handleBreedingCreate(user, req);
+      if (pathname === "/health") return handleHealthCreate(user, req);
 
-      if (pathname === "/import/preview") return await handleImportPreview(req);
-      if (pathname === "/import") return handleImportExecute();
+      if (pathname === "/import/preview") return await handleImportPreview(user, req);
+      if (pathname === "/import") return handleImportExecute(user);
 
       const cattleUpdateMatch = pathname.match(/^\/cattle\/(\d+)$/);
-      if (cattleUpdateMatch) return handleCattleUpdate(req, parseInt(cattleUpdateMatch[1]!, 10));
+      if (cattleUpdateMatch) return handleCattleUpdate(user, req, parseInt(cattleUpdateMatch[1]!, 10));
 
       const cattleDeleteMatch = pathname.match(/^\/cattle\/(\d+)\/delete$/);
-      if (cattleDeleteMatch) return handleCattleDelete(parseInt(cattleDeleteMatch[1]!, 10));
+      if (cattleDeleteMatch) return handleCattleDelete(user, parseInt(cattleDeleteMatch[1]!, 10));
 
       const pastureDeleteMatch = pathname.match(/^\/pastures\/(\d+)\/delete$/);
-      if (pastureDeleteMatch) return handlePastureDelete(parseInt(pastureDeleteMatch[1]!, 10));
+      if (pastureDeleteMatch) return handlePastureDelete(user, parseInt(pastureDeleteMatch[1]!, 10));
 
       const calfCreateMatch = pathname.match(/^\/breeding\/(\d+)\/calf$/);
-      if (calfCreateMatch) return handleCalfCreate(req, parseInt(calfCreateMatch[1]!, 10));
+      if (calfCreateMatch) return handleCalfCreate(user, req, parseInt(calfCreateMatch[1]!, 10));
 
       const breedingDeleteMatch = pathname.match(/^\/breeding\/(\d+)\/delete$/);
-      if (breedingDeleteMatch) return handleBreedingDelete(parseInt(breedingDeleteMatch[1]!, 10));
+      if (breedingDeleteMatch) return handleBreedingDelete(user, parseInt(breedingDeleteMatch[1]!, 10));
 
       const healthToggleMatch = pathname.match(/^\/health\/(\d+)\/toggle$/);
-      if (healthToggleMatch) return handleHealthToggle(parseInt(healthToggleMatch[1]!, 10));
+      if (healthToggleMatch) return handleHealthToggle(user, parseInt(healthToggleMatch[1]!, 10));
 
       const healthDeleteMatch = pathname.match(/^\/health\/(\d+)\/delete$/);
-      if (healthDeleteMatch) return handleHealthDelete(parseInt(healthDeleteMatch[1]!, 10));
+      if (healthDeleteMatch) return handleHealthDelete(user, parseInt(healthDeleteMatch[1]!, 10));
     }
 
-    return notFound();
+    return notFound(user);
   },
 });
 

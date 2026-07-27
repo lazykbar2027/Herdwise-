@@ -1,4 +1,8 @@
-export function renderPage(title: string, bodyHTML: string): string {
+export interface PageUser {
+  email: string;
+}
+
+export function renderPage(title: string, bodyHTML: string, user?: PageUser | null): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -11,12 +15,21 @@ export function renderPage(title: string, bodyHTML: string): string {
   <nav class="navbar">
     <a href="/" class="brand">🏔️ CattleTrackerMt</a>
     <div class="nav-links">
-      <a href="/cattle">Cattle</a>
-      <a href="/pastures">Pastures</a>
-      <a href="/breeding">Breeding</a>
-      <a href="/health">Health</a>
-      <a href="/import">Import</a>
-      <a href="/export">Export</a>
+      ${user ? `
+        <a href="/cattle">Cattle</a>
+        <a href="/pastures">Pastures</a>
+        <a href="/breeding">Breeding</a>
+        <a href="/health">Health</a>
+        <a href="/import">Import</a>
+        <a href="/export">Export</a>
+        <span class="nav-user">${escapeHTML(user.email)}</span>
+        <form method="POST" action="/logout" class="nav-logout-form">
+          <button type="submit" class="nav-logout-btn">Logout</button>
+        </form>
+      ` : `
+        <a href="/login">Login</a>
+        <a href="/register">Register</a>
+      `}
     </div>
   </nav>
   <main class="container">

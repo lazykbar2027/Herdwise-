@@ -74,32 +74,33 @@ const CATTLE_LIST_SELECT = `
   LEFT JOIN pastures p ON c.pasture_id = p.id
 `;
 
-export function getCattleList(search?: string): CattleListRow[] {
+export function getCattleList(userId: number, search?: string): CattleListRow[] {
   let sql = CATTLE_LIST_SELECT;
+  sql += ` WHERE c.user_id = ?`;
 
   if (search && search.trim().length > 0) {
     const term = `%${search.trim()}%`;
-    sql += ` WHERE c.tag_number LIKE ?1 OR c.breed LIKE ?1 OR c.notes LIKE ?1`;
+    sql += ` AND (c.tag_number LIKE ? OR c.breed LIKE ? OR c.notes LIKE ?)`;
     sql += ` ORDER BY c.tag_number`;
-    return db.query(sql).all(term) as CattleListRow[];
+    return db.query(sql).all(userId, term, term, term) as CattleListRow[];
   }
 
   sql += ` ORDER BY c.tag_number`;
-  return db.query(sql).all() as CattleListRow[];
+  return db.query(sql).all(userId) as CattleListRow[];
 }
 
-export function getCattleById(id: number): CattleDetailRow | null {
+export function getCattleById(userId: number, id: number): CattleDetailRow | null {
   return db.query(`
     SELECT c.id, c.tag_number, c.breed, c.sex, c.birth_date,
            c.pasture_id, p.name as pasture_name, c.notes,
            c.created_at, c.updated_at
     FROM cattle c
     LEFT JOIN pastures p ON c.pasture_id = p.id
-    WHERE c.id = ?
-  `).get(id) as CattleDetailRow | null;
+    WHERE c.id = ? AND c.user_id = ?
+  `).get(id, userId) as CattleDetailRow | null;
 }
 
-export function createCattle(data: {
+export function createCattle(userId: number, data: {
   tag_number: string;
   breed: string;
   sex: string;
@@ -108,13 +109,13 @@ export function createCattle(data: {
   notes: string;
 }): void {
   db.run(
-    `INSERT INTO cattle (tag_number, breed, sex, birth_date, pasture_id, notes)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [data.tag_number, data.breed, data.sex, data.birth_date, data.pasture_id, data.notes]
+    `INSERT INTO cattle (user_id, tag_number, breed, sex, birth_date, pasture_id, notes)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [userId, data.tag_number, data.breed, data.sex, data.birth_date, data.pasture_id, data.notes]
   );
 }
 
-export function updateCattle(id: number, data: {
+export function updateCattle(userId: number, id: number, data: {
   tag_number: string;
   breed: string;
   sex: string;
@@ -125,163 +126,171 @@ export function updateCattle(id: number, data: {
   db.run(
     `UPDATE cattle SET tag_number = ?, breed = ?, sex = ?, birth_date = ?,
      pasture_id = ?, notes = ?, updated_at = datetime('now')
-     WHERE id = ?`,
-    [data.tag_number, data.breed, data.sex, data.birth_date, data.pasture_id, data.notes, id]
+     WHERE id = ? AND user_id = ?`,
+    [data.tag_number, data.breed, data.sex, data.birth_date, data.pasture_id, data.notes, id, userId]
   );
 }
 
-export function deleteCattle(id: number): void {
-  db.run(`DELETE FROM cattle WHERE id = ?`, [id]);
+export function deleteCattle(userId: number, id: number): void {
+  db.run(`DELETE FROM cattle WHERE id = ? AND user_id = ?`, [id, userId]);
 }
 
-export function getCattleInPasture(pastureId: number, search?: string): CattleListRow[] {
+export function getCattleInPasture(userId: number, pastureId: number, search?: string): CattleListRow[] {
   let sql = CATTLE_LIST_SELECT;
-  sql += ` WHERE c.pasture_id = ?`;
+  sql += ` WHERE c.pasture_id = ? AND c.user_id = ?`;
 
   if (search && search.trim().length > 0) {
     const term = `%${search.trim()}%`;
     sql += ` AND (c.tag_number LIKE ? OR c.breed LIKE ? OR c.notes LIKE ?)`;
     sql += ` ORDER BY c.tag_number`;
-    return db.query(sql).all(pastureId, term, term, term) as CattleListRow[];
+    return db.query(sql).all(pastureId, userId, term, term, term) as CattleListRow[];
   }
 
   sql += ` ORDER BY c.tag_number`;
-  return db.query(sql).all(pastureId) as CattleListRow[];
+  return db.query(sql).all(pastureId, userId) as CattleListRow[];
 }
 
 // ─── Pasture Queries ──────────────────────────────────────────────────
 
-export function getPastures(): PastureRow[] {
+export function getPastures(userId: number): PastureRow[] {
   return db.query(`
     SELECT p.id, p.name, COUNT(c.id) as cattle_count
     FROM pastures p
     LEFT JOIN cattle c ON c.pasture_id = p.id
+    WHERE p.user_id = ?
     GROUP BY p.id
     ORDER BY p.name
-  `).all() as PastureRow[];
+  `).all(userId) as PastureRow[];
 }
 
-export function getPastureById(id: number): { id: number; name: string } | null {
-  return db.query(`SELECT id, name FROM pastures WHERE id = ?`).get(id) as { id: number; name: string } | null;
+export function getPastureById(userId: number, id: number): { id: number; name: string } | null {
+  return db.query(`SELECT id, name FROM pastures WHERE id = ? AND user_id = ?`).get(id, userId) as { id: number; name: string } | null;
 }
 
-export function createPasture(name: string): void {
-  db.run(`INSERT INTO pastures (name) VALUES (?)`, [name]);
+export function createPasture(userId: number, name: string): void {
+  db.run(`INSERT INTO pastures (user_id, name) VALUES (?, ?)`, [userId, name]);
 }
 
-export function deletePasture(id: number): void {
-  db.run(`DELETE FROM pastures WHERE id = ?`, [id]);
+export function deletePasture(userId: number, id: number): void {
+  db.run(`DELETE FROM pastures WHERE id = ? AND user_id = ?`, [id, userId]);
 }
 
-export function isPastureEmpty(id: number): boolean {
-  const row = db.query(`SELECT COUNT(*) as c FROM cattle WHERE pasture_id = ?`).get(id) as { c: number };
+export function isPastureEmpty(userId: number, id: number): boolean {
+  const row = db.query(`SELECT COUNT(*) as c FROM cattle WHERE pasture_id = ? AND user_id = ?`).get(id, userId) as { c: number };
   return row.c === 0;
+}
+
+export function getPastureByName(userId: number, name: string): { id: number; name: string } | null {
+  return db.query(`SELECT id, name FROM pastures WHERE user_id = ? AND LOWER(name) = LOWER(?)`).get(userId, name) as { id: number; name: string } | null;
 }
 
 // ─── Health Record Queries ────────────────────────────────────────────
 
-export function getHealthRecordsForCattle(cattleId: number): HealthRecordRow[] {
+export function getHealthRecordsForCattle(userId: number, cattleId: number): HealthRecordRow[] {
   return db.query(`
     SELECT hr.id, hr.cattle_id, c.tag_number, hr.date, hr.concern, hr.resolved
     FROM health_records hr
     JOIN cattle c ON c.id = hr.cattle_id
-    WHERE hr.cattle_id = ?
+    WHERE hr.cattle_id = ? AND hr.user_id = ? AND c.user_id = ?
     ORDER BY hr.date DESC
-  `).all(cattleId) as HealthRecordRow[];
+  `).all(cattleId, userId, userId) as HealthRecordRow[];
 }
 
-export function getHealthOverview(): HealthRecordRow[] {
+export function getHealthOverview(userId: number): HealthRecordRow[] {
   return db.query(`
     SELECT hr.id, hr.cattle_id, c.tag_number, hr.date, hr.concern, hr.resolved
     FROM health_records hr
     JOIN cattle c ON c.id = hr.cattle_id
+    WHERE hr.user_id = ?
     ORDER BY hr.date DESC
     LIMIT 100
-  `).all() as HealthRecordRow[];
+  `).all(userId) as HealthRecordRow[];
 }
 
 // ─── Breeding Record Queries ──────────────────────────────────────────
 
-export function getBreedingRecordsForCattle(cattleId: number): BreedingRecordRow[] {
+export function getBreedingRecordsForCattle(userId: number, cattleId: number): BreedingRecordRow[] {
   return db.query(`
     SELECT br.id, br.cow_id, cow.tag_number as cow_tag, br.bull_tag, br.breeding_date, br.notes,
            cal.tag_number as calf_tag, cal.sex as calf_sex, cal.birth_date as calf_birth
     FROM breeding_records br
     JOIN cattle cow ON cow.id = br.cow_id
     LEFT JOIN calves cal ON cal.breeding_record_id = br.id
-    WHERE br.cow_id = ?
+    WHERE br.cow_id = ? AND br.user_id = ?
     ORDER BY br.breeding_date DESC
-  `).all(cattleId) as BreedingRecordRow[];
+  `).all(cattleId, userId) as BreedingRecordRow[];
 }
 
-export function getBreedingOverview(): BreedingRecordRow[] {
-  return getBreedingRecords();
+export function getBreedingOverview(userId: number): BreedingRecordRow[] {
+  return getBreedingRecords(userId);
 }
 
-export function getBreedingRecords(): BreedingRecordRow[] {
+export function getBreedingRecords(userId: number): BreedingRecordRow[] {
   return db.query(`
     SELECT br.id, br.cow_id, cow.tag_number as cow_tag, br.bull_tag, br.breeding_date, br.notes,
            cal.tag_number as calf_tag, cal.sex as calf_sex, cal.birth_date as calf_birth
     FROM breeding_records br
     JOIN cattle cow ON cow.id = br.cow_id
     LEFT JOIN calves cal ON cal.breeding_record_id = br.id
+    WHERE br.user_id = ?
     ORDER BY br.breeding_date DESC
     LIMIT 100
-  `).all() as BreedingRecordRow[];
+  `).all(userId) as BreedingRecordRow[];
 }
 
-export function getBreedingRecordById(id: number): BreedingRecordRow | null {
+export function getBreedingRecordById(userId: number, id: number): BreedingRecordRow | null {
   return db.query(`
     SELECT br.id, br.cow_id, cow.tag_number as cow_tag, br.bull_tag, br.breeding_date, br.notes,
            cal.tag_number as calf_tag, cal.sex as calf_sex, cal.birth_date as calf_birth
     FROM breeding_records br
     JOIN cattle cow ON cow.id = br.cow_id
     LEFT JOIN calves cal ON cal.breeding_record_id = br.id
-    WHERE br.id = ?
-  `).get(id) as BreedingRecordRow | null;
+    WHERE br.id = ? AND br.user_id = ?
+  `).get(id, userId) as BreedingRecordRow | null;
 }
 
-export function createBreedingRecord(cowId: number, bullTag: string, date: string, notes: string): void {
+export function createBreedingRecord(userId: number, cowId: number, bullTag: string, date: string, notes: string): void {
   db.run(
-    `INSERT INTO breeding_records (cow_id, bull_tag, breeding_date, notes) VALUES (?, ?, ?, ?)`,
-    [cowId, bullTag, date, notes]
+    `INSERT INTO breeding_records (user_id, cow_id, bull_tag, breeding_date, notes) VALUES (?, ?, ?, ?, ?)`,
+    [userId, cowId, bullTag, date, notes]
   );
 }
 
-export function createCalf(breedingId: number, tagNumber: string, sex: string, birthDate: string, notes: string): void {
+export function createCalf(userId: number, breedingId: number, tagNumber: string, sex: string, birthDate: string, notes: string): void {
   db.run(
-    `INSERT INTO calves (breeding_record_id, tag_number, sex, birth_date, notes) VALUES (?, ?, ?, ?, ?)`,
-    [breedingId, tagNumber, sex, birthDate, notes]
+    `INSERT INTO calves (user_id, breeding_record_id, tag_number, sex, birth_date, notes) VALUES (?, ?, ?, ?, ?, ?)`,
+    [userId, breedingId, tagNumber, sex, birthDate, notes]
   );
 }
 
-export function deleteBreedingRecord(id: number): void {
-  db.run(`DELETE FROM breeding_records WHERE id = ?`, [id]);
+export function deleteBreedingRecord(userId: number, id: number): void {
+  db.run(`DELETE FROM breeding_records WHERE id = ? AND user_id = ?`, [id, userId]);
 }
 
-export function getHealthRecords(): HealthRecordRow[] {
+export function getHealthRecords(userId: number): HealthRecordRow[] {
   return db.query(`
     SELECT hr.id, hr.cattle_id, c.tag_number, hr.date, hr.concern, hr.resolved
     FROM health_records hr
     JOIN cattle c ON c.id = hr.cattle_id
+    WHERE hr.user_id = ?
     ORDER BY hr.date DESC
     LIMIT 100
-  `).all() as HealthRecordRow[];
+  `).all(userId) as HealthRecordRow[];
 }
 
-export function createHealthRecord(cattleId: number, date: string, concern: string, resolved: number): void {
+export function createHealthRecord(userId: number, cattleId: number, date: string, concern: string, resolved: number): void {
   db.run(
-    `INSERT INTO health_records (cattle_id, date, concern, resolved) VALUES (?, ?, ?, ?)`,
-    [cattleId, date, concern, resolved]
+    `INSERT INTO health_records (user_id, cattle_id, date, concern, resolved) VALUES (?, ?, ?, ?, ?)`,
+    [userId, cattleId, date, concern, resolved]
   );
 }
 
-export function toggleHealthRecord(id: number): void {
-  db.run(`UPDATE health_records SET resolved = CASE WHEN resolved = 0 THEN 1 ELSE 0 END WHERE id = ?`, [id]);
+export function toggleHealthRecord(userId: number, id: number): void {
+  db.run(`UPDATE health_records SET resolved = CASE WHEN resolved = 0 THEN 1 ELSE 0 END WHERE id = ? AND user_id = ?`, [id, userId]);
 }
 
-export function deleteHealthRecord(id: number): void {
-  db.run(`DELETE FROM health_records WHERE id = ?`, [id]);
+export function deleteHealthRecord(userId: number, id: number): void {
+  db.run(`DELETE FROM health_records WHERE id = ? AND user_id = ?`, [id, userId]);
 }
 
 // ─── Selection Helpers ──────────────────────────────────────────────
@@ -292,28 +301,29 @@ export interface CattleOption {
   sex: string;
 }
 
-export function getFemaleCattle(): CattleOption[] {
+export function getFemaleCattle(userId: number): CattleOption[] {
   return db.query(`
     SELECT id, tag_number, sex FROM cattle
-    WHERE sex IN ('Cow', 'Heifer')
+    WHERE user_id = ? AND sex IN ('Cow', 'Heifer')
     ORDER BY tag_number
-  `).all() as CattleOption[];
+  `).all(userId) as CattleOption[];
 }
 
-export function getAllCattleOptions(): CattleOption[] {
+export function getAllCattleOptions(userId: number): CattleOption[] {
   return db.query(`
     SELECT id, tag_number, sex FROM cattle
+    WHERE user_id = ?
     ORDER BY tag_number
-  `).all() as CattleOption[];
+  `).all(userId) as CattleOption[];
 }
 
 // ─── Import / Bulk Insert ─────────────────────────────────────────────
 
-export function getCattleByTag(tag: string): { id: number } | null {
-  return db.query(`SELECT id FROM cattle WHERE tag_number = ?`).get(tag) as { id: number } | null;
+export function getCattleByTag(userId: number, tag: string): { id: number } | null {
+  return db.query(`SELECT id FROM cattle WHERE user_id = ? AND tag_number = ?`).get(userId, tag) as { id: number } | null;
 }
 
-export function importCattle(records: Array<{
+export function importCattle(userId: number, records: Array<{
   tag_number: string;
   breed: string;
   sex: string;
@@ -322,8 +332,8 @@ export function importCattle(records: Array<{
   notes: string;
 }>): { imported: number; skipped: Array<{ tag: string; reason: string }> } {
   const insertStmt = db.prepare(
-    `INSERT INTO cattle (tag_number, breed, sex, birth_date, pasture_id, notes)
-     VALUES (?, ?, ?, ?, ?, ?)`
+    `INSERT INTO cattle (user_id, tag_number, breed, sex, birth_date, pasture_id, notes)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
   );
 
   let imported = 0;
@@ -332,6 +342,7 @@ export function importCattle(records: Array<{
   for (const record of records) {
     try {
       insertStmt.run(
+        userId,
         record.tag_number,
         record.breed,
         record.sex,
@@ -387,7 +398,7 @@ export interface FullExportData {
   health: ExportHealth[];
 }
 
-export function getFullExportData(): FullExportData {
+export function getFullExportData(userId: number): FullExportData {
   const cattle = db.query(`
     SELECT c.tag_number, c.breed, c.sex, c.birth_date,
            p.name as pasture_name,
@@ -400,8 +411,9 @@ export function getFullExportData(): FullExportData {
            c.notes
     FROM cattle c
     LEFT JOIN pastures p ON c.pasture_id = p.id
+    WHERE c.user_id = ?
     ORDER BY c.tag_number
-  `).all() as ExportCattle[];
+  `).all(userId) as ExportCattle[];
 
   const breeding = db.query(`
     SELECT cow.tag_number as cow_tag, br.bull_tag, br.breeding_date, br.notes,
@@ -410,16 +422,18 @@ export function getFullExportData(): FullExportData {
     FROM breeding_records br
     JOIN cattle cow ON cow.id = br.cow_id
     LEFT JOIN calves cal ON cal.breeding_record_id = br.id
+    WHERE br.user_id = ?
     ORDER BY br.breeding_date DESC
-  `).all() as ExportBreeding[];
+  `).all(userId) as ExportBreeding[];
 
   const health = db.query(`
     SELECT c.tag_number, hr.date, hr.concern,
            CASE WHEN hr.resolved = 0 THEN 'Active' ELSE 'Resolved' END as status
     FROM health_records hr
     JOIN cattle c ON c.id = hr.cattle_id
+    WHERE hr.user_id = ?
     ORDER BY hr.date DESC
-  `).all() as ExportHealth[];
+  `).all(userId) as ExportHealth[];
 
   return { cattle, breeding, health };
 }
