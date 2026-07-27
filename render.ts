@@ -1,8 +1,20 @@
 export interface PageUser {
   email: string;
+  trialDaysLeft?: number | null;
+  isSubscribed?: boolean;
 }
 
 export function renderPage(title: string, bodyHTML: string, user?: PageUser | null): string {
+  // Compute trial badge for the navbar
+  let trialBadge = "";
+  if (user && !user.isSubscribed) {
+    if (user.trialDaysLeft !== null && user.trialDaysLeft !== undefined && user.trialDaysLeft > 0) {
+      trialBadge = `<span class="trial-badge trial-badge-active">${user.trialDaysLeft} day${user.trialDaysLeft !== 1 ? "s" : ""} left</span>`;
+    } else {
+      trialBadge = `<span class="trial-badge trial-badge-expired">Trial expired</span>`;
+    }
+  }
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -23,6 +35,7 @@ export function renderPage(title: string, bodyHTML: string, user?: PageUser | nu
         <a href="/import">Import</a>
         <a href="/export">Export</a>
         <span class="nav-user">${escapeHTML(user.email)}</span>
+        ${trialBadge}
         <form method="POST" action="/logout" class="nav-logout-form">
           <button type="submit" class="nav-logout-btn">Logout</button>
         </form>

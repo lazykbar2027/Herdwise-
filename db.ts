@@ -83,4 +83,8 @@ export function initDB() {
       FOREIGN KEY (cattle_id) REFERENCES cattle(id) ON DELETE CASCADE
     );
   `);
+
+  // Migration: add trial/subscription columns (safe to run on existing DBs)
+  try { db.exec(`ALTER TABLE users ADD COLUMN trial_ends_at TEXT`); } catch (_) { /* already exists */ }
+  try { db.exec(`ALTER TABLE users ADD COLUMN subscribed INTEGER DEFAULT 0`); } catch (_) { /* already exists */ }
 }

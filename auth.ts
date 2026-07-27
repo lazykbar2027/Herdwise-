@@ -6,6 +6,8 @@ export interface User {
   id: number;
   email: string;
   created_at: string;
+  trial_ends_at: string | null;
+  subscribed: number;
 }
 
 // ─── Password helpers ──────────────────────────────────────────────────
@@ -39,7 +41,7 @@ export function getUserFromSession(req: Request): User | null {
   if (!token) return null;
 
   const row = db.query(`
-    SELECT u.id, u.email, u.created_at
+    SELECT u.id, u.email, u.created_at, u.trial_ends_at, u.subscribed
     FROM sessions s
     JOIN users u ON u.id = s.user_id
     WHERE s.token = ?

@@ -57,11 +57,42 @@ function redirect(url: string): Response {
 }
 
 function htmlPage(title: string, body: string, user?: User | null, status: number = 200): Response {
-  const pageUser: PageUser | null = user ? { email: user.email } : null;
-  return new Response(renderPage(title, body, pageUser), {
+  const isSubscribed = user ? (user.subscribed === 1) : false;
+  const trialDaysLeft = computeTrialDaysLeft(user);
+  const pageUser: PageUser | null = user ? {
+    email: user.email,
+    trialDaysLeft,
+    isSubscribed,
+  } : null;
+
+  const banner = user ? trialBanner(user) : "";
+  const fullBody = banner + body;
+
+  return new Response(renderPage(title, fullBody, pageUser), {
     status,
     headers: { "Content-Type": "text/html; charset=utf-8" },
   });
+}
+
+function computeTrialDaysLeft(user: User | null): number | null {
+  if (!user || !user.trial_ends_at) return null;
+  const trialEnds = new Date(user.trial_ends_at);
+  const now = new Date();
+  const diffMs = trialEnds.getTime() - now.getTime();
+  const days = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+  return days; // may be negative if expired
+}
+
+function trialBanner(user: User): string {
+  if (!user || user.subscribed === 1) return "";
+  const trialDaysLeft = computeTrialDaysLeft(user);
+  if (trialDaysLeft === null) return "";
+
+  if (trialDaysLeft > 0) {
+    return `<div class="trial-banner">⏳ <strong>${trialDaysLeft} day${trialDaysLeft !== 1 ? "s" : ""} left</strong> in your free trial. <a href="/subscribe">Subscribe now →</a></div>`;
+  } else {
+    return `<div class="trial-banner trial-banner-expired">⚠️ Your free trial has ended. <a href="/subscribe">Subscribe to continue →</a></div>`;
+  }
 }
 
 function notFound(user?: User | null): Response {
@@ -447,7 +478,11 @@ async function handleRegisterPost(req: Request): Promise<Response> {
   const passwordHash = await hashPassword(password);
 
   try {
-    const result = db.run(`INSERT INTO users (email, password_hash) VALUES (?, ?)`, [email, passwordHash]);
+    const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
+    const result = db.run(
+      `INSERT INTO users (email, password_hash, trial_ends_at, subscribed) VALUES (?, ?, ?, 0)`,
+      [email, passwordHash, trialEndsAt]
+    );
     const userId = Number(result.lastInsertRowid);
     const { cookie } = createSession(userId);
 
@@ -1681,6 +1716,50 @@ function handleImportExecute(user: User): Response {
   return redirect(`/cattle?${params.toString()}`);
 }
 
+// ─── Subscribe Page ───────────────────────────────────────────────────
+
+function handleSubscribePage(user: User): Response {
+  const trialDaysLeft = computeTrialDaysLeft(user);
+
+  let body = `<div class="subscribe-page">`;
+
+  if (trialDaysLeft !== null && trialDaysLeft > 0) {
+    body += `<div class="subscribe-card">
+      <h2>🔔 You're on a free trial</h2>
+      <p class="subscribe-message">
+        You have <strong>${trialDaysLeft} day${trialDaysLeft !== 1 ? "s" : ""} left</strong> in your free trial.
+        Subscribe now to keep your data after the trial ends.
+      </p>`;
+  } else {
+    body += `<div class="subscribe-card subscribe-card-expired">
+      <h2>⚠️ Trial Expired</h2>
+      <p class="subscribe-message">
+        Your free trial has ended. Subscribe to continue using CattleTrackerMt.
+      </p>`;
+  }
+
+  body += `
+      <div class="subscribe-pricing">
+        <span class="subscribe-price">$15</span><span class="subscribe-period">/month</span>
+      </div>
+      <a href="https://buy.stripe.com/5Qk7sLbRw82MdcH8Vn3cc00" target="_blank" rel="noopener" class="btn btn-subscribe">
+        🔒 Subscribe — $15/month
+      </a>
+      <p class="subscribe-note">
+        After subscribing, your account will be activated and you can keep managing your herd.
+      </p>
+      <p class="subscribe-note text-muted">
+        ⓘ Payment is handled securely by Stripe. After paying, you may need to wait briefly or
+        <a href="mailto:support@cattletrackermt.com">contact support</a> for activation.
+      </p>
+      ${trialDaysLeft !== null && trialDaysLeft > 0 ? `<p class="mt-1"><a href="/cattle">← Back to Cattle</a></p>` : ""}
+    </div>`;
+
+  body += `</div>`;
+
+  return htmlPage("Subscribe", body, user);
+}
+
 // ─── Server ───────────────────────────────────────────────────────────
 
 const server = Bun.serve({
@@ -1719,6 +1798,16 @@ const server = Bun.serve({
       return redirect(`/login?redirect=${encodeURIComponent(pathname + url.search)}`);
     }
 
+    // ── Trial check: redirect expired trials to /subscribe ──
+    if (user.subscribed !== 1 && user.trial_ends_at) {
+      const trialEnds = new Date(user.trial_ends_at);
+      if (new Date() > trialEnds) {
+        if (pathname !== "/subscribe" && pathname !== "/logout") {
+          return redirect("/subscribe");
+        }
+      }
+    }
+
     // GET routes
     if (method === "GET") {
       if (pathname === "/") return redirect("/cattle");
@@ -1750,6 +1839,7 @@ const server = Bun.serve({
       if (pathname === "/export") return handleExport(user);
       if (pathname === "/export/download") return await handleExportDownload(user);
       if (pathname === "/import") return handleImportPage(user);
+      if (pathname === "/subscribe") return handleSubscribePage(user);
 
       // Dynamic GET routes
       const cattleDetailMatch = pathname.match(/^\/cattle\/(\d+)$/);
