@@ -4,12 +4,12 @@ export function renderPage(title: string, bodyHTML: string): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${escapeHTML(title)} — HerdWise</title>
+  <title>${escapeHTML(title)} — CattleTrackerMt</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <nav class="navbar">
-    <a href="/" class="brand">🐄 HerdWise</a>
+    <a href="/" class="brand">🏔️ CattleTrackerMt</a>
     <div class="nav-links">
       <a href="/cattle">Cattle</a>
       <a href="/pastures">Pastures</a>

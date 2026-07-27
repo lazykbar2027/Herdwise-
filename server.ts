@@ -1229,7 +1229,7 @@ async function handleExportDownload(): Promise<Response> {
   return new Response(buffer, {
     headers: {
       "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "Content-Disposition": `attachment; filename="herdwise-export-${today}.xlsx"`,
+      "Content-Disposition": `attachment; filename="cattletrackermt-export-${today}.xlsx"`,
     },
   });
 }
@@ -1599,4 +1599,4 @@ const server = Bun.serve({
   },
 });
 
-console.log(`🐄 HerdWise running at http://localhost:${server.port}`);
+console.log(`🏔️ CattleTrackerMt running at http://localhost:${server.port}`);
