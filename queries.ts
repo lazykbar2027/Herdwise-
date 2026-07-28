@@ -12,6 +12,8 @@ export interface CattleListRow {
   pasture_id: number | null;
   pasture_name: string | null;
   notes: string;
+  status: string;
+  deceased_date: string | null;
   last_health_concern: string | null;
   last_health_date: string | null;
   last_health_resolved: number | null;
@@ -29,6 +31,8 @@ export interface CattleDetailRow {
   pasture_id: number | null;
   pasture_name: string | null;
   notes: string;
+  status: string;
+  deceased_date: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -65,6 +69,7 @@ export interface BreedingRecordRow {
 const CATTLE_LIST_SELECT = `
   SELECT c.id, c.tag_number, c.eid_tag, c.breed, c.sex, c.birth_date,
          c.pasture_id, p.name as pasture_name, c.notes,
+         c.status, c.deceased_date,
          (SELECT hr.concern FROM health_records hr
           WHERE hr.cattle_id = c.id ORDER BY hr.date DESC LIMIT 1) as last_health_concern,
          (SELECT hr.date FROM health_records hr
@@ -76,9 +81,17 @@ const CATTLE_LIST_SELECT = `
   LEFT JOIN pastures p ON c.pasture_id = p.id
 `;
 
-export function getCattleList(userId: number, search?: string): CattleListRow[] {
+export function getCattleList(userId: number, search?: string, statusFilter?: string): CattleListRow[] {
   let sql = CATTLE_LIST_SELECT;
   sql += ` WHERE c.user_id = ?`;
+
+  // Apply status filter
+  if (statusFilter === "active") {
+    sql += ` AND c.status = 'Active'`;
+  } else if (statusFilter === "deceased") {
+    sql += ` AND c.status = 'Deceased'`;
+  }
+  // "all" or undefined: no filter
 
   if (search && search.trim().length > 0) {
     const term = `%${search.trim()}%`;
@@ -95,6 +108,7 @@ export function getCattleById(userId: number, id: number): CattleDetailRow | nul
   return db.query(`
     SELECT c.id, c.tag_number, c.eid_tag, c.breed, c.sex, c.birth_date,
            c.pasture_id, p.name as pasture_name, c.notes,
+           c.status, c.deceased_date,
            c.created_at, c.updated_at
     FROM cattle c
     LEFT JOIN pastures p ON c.pasture_id = p.id
@@ -126,12 +140,14 @@ export function updateCattle(userId: number, id: number, data: {
   birth_date: string | null;
   pasture_id: number | null;
   notes: string;
+  status: string;
+  deceased_date: string | null;
 }): void {
   db.run(
     `UPDATE cattle SET tag_number = ?, eid_tag = ?, breed = ?, sex = ?, birth_date = ?,
-     pasture_id = ?, notes = ?, updated_at = datetime('now')
+     pasture_id = ?, notes = ?, status = ?, deceased_date = ?, updated_at = datetime('now')
      WHERE id = ? AND user_id = ?`,
-    [data.tag_number, data.eid_tag, data.breed, data.sex, data.birth_date, data.pasture_id, data.notes, id, userId]
+    [data.tag_number, data.eid_tag, data.breed, data.sex, data.birth_date, data.pasture_id, data.notes, data.status, data.deceased_date, id, userId]
   );
 }
 
@@ -308,17 +324,17 @@ export interface CattleOption {
 export function getFemaleCattle(userId: number): CattleOption[] {
   return db.query(`
     SELECT id, tag_number, sex FROM cattle
-    WHERE user_id = ? AND sex IN ('Cow', 'Heifer')
+    WHERE user_id = ? AND sex IN ('Cow', 'Heifer') AND status = 'Active'
     ORDER BY tag_number
   `).all(userId) as CattleOption[];
 }
 
 export function getAllCattleOptions(userId: number): CattleOption[] {
   return db.query(`
-    SELECT id, tag_number, sex FROM cattle
+    SELECT id, tag_number, sex, status FROM cattle
     WHERE user_id = ?
     ORDER BY tag_number
-  `).all(userId) as CattleOption[];
+  `).all(userId) as (CattleOption & { status: string })[];
 }
 
 // ─── Import / Bulk Insert ─────────────────────────────────────────────
@@ -385,6 +401,8 @@ export interface ExportCattle {
   pasture_name: string | null;
   health_status: string;
   notes: string;
+  status: string;
+  deceased_date: string | null;
 }
 
 export interface ExportBreeding {
@@ -420,7 +438,7 @@ export function getFullExportData(userId: number): FullExportData {
               ORDER BY hr.date DESC LIMIT 1),
              'Healthy'
            ) as health_status,
-           c.notes
+           c.notes, c.status, c.deceased_date
     FROM cattle c
     LEFT JOIN pastures p ON c.pasture_id = p.id
     WHERE c.user_id = ?
@@ -448,4 +466,11 @@ export function getFullExportData(userId: number): FullExportData {
   `).all(userId) as ExportHealth[];
 
   return { cattle, breeding, health };
+}
+
+// ─── Deceased Count ────────────────────────────────────────────────────
+
+export function getDeceasedCattleCount(userId: number): number {
+  const row = db.query(`SELECT COUNT(*) as c FROM cattle WHERE user_id = ? AND status = 'Deceased'`).get(userId) as { c: number };
+  return row.c;
 }

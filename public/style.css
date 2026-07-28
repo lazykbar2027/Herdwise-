@@ -407,6 +407,113 @@ textarea {
   margin-bottom: 0;
 }
 
+/* ─── Deceased section ──────────────────────────────────────────────── */
+
+.deceased-section {
+  border: 1px solid #d4c9b5;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+  background: #fdf8f5;
+}
+
+.deceased-section .checkbox-label {
+  margin-bottom: 0.75rem;
+}
+
+.deceased-section #deceased_date_group {
+  margin-top: 0.5rem;
+}
+
+.deceased-section #deceased_date_group label {
+  margin-bottom: 0.3rem;
+}
+
+.deceased-section #deceased_date_group input {
+  margin-bottom: 0;
+}
+
+/* ─── Status badges ─────────────────────────────────────────────────── */
+
+.status-badge {
+  display: inline-block;
+  padding: 0.2rem 0.6rem;
+  border-radius: 12px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.status-active {
+  background: #d4edda;
+  color: #2d6a3f;
+}
+
+.status-deceased {
+  background: #e9ecef;
+  color: #6c757d;
+}
+
+/* ─── Deceased row styling ───────────────────────────────────────────── */
+
+.row-deceased td {
+  color: #999;
+}
+
+.row-deceased .tag-link {
+  color: #888;
+}
+
+.row-deceased .tag-link:hover {
+  color: #555;
+}
+
+/* ─── Longevity display ─────────────────────────────────────────────── */
+
+.detail-longevity {
+  color: #6c757d;
+  font-style: italic;
+}
+
+.detail-deceased-date {
+  color: #c0392b;
+}
+
+/* ─── Status filter tabs ─────────────────────────────────────────────── */
+
+.status-filter {
+  display: flex;
+  gap: 0.25rem;
+  margin: 0.75rem 0;
+  flex-wrap: wrap;
+}
+
+.filter-tab {
+  display: inline-block;
+  padding: 0.35rem 0.85rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-decoration: none;
+  border-radius: 6px;
+  background: #eef2e5;
+  color: #4a3f2f;
+  border: 1px solid transparent;
+  transition: background 0.15s;
+}
+
+.filter-tab:hover {
+  background: #dde5ce;
+}
+
+.filter-tab-active {
+  background: #3d5a1e;
+  color: #fff;
+}
+
+.filter-tab-active:hover {
+  background: #4d6e28;
+}
+
 /* ─── Buttons ─────────────────────────────────────────────────────── */
 
 button, .btn {

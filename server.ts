@@ -10,7 +10,7 @@ import {
   getBreedingRecordsForCattle, getBreedingOverview, getBreedingRecords,
   getBreedingRecordById, createBreedingRecord, createCalf, deleteBreedingRecord,
   getFemaleCattle, getAllCattleOptions,
-  getFullExportData,
+  getFullExportData, getDeceasedCattleCount,
   importCattle, getCattleByTag, getCattleByEid, getPastureByName,
 } from "./queries";
 import {
@@ -121,19 +121,28 @@ function formatDate(d: string | null): string {
   return d;
 }
 
+function statusBadge(status: string): string {
+  if (status === "Deceased") return `<span class="status-badge status-deceased">Deceased</span>`;
+  return `<span class="status-badge status-active">Active</span>`;
+}
+
 function cattleTableRows(cattle: CattleListRow[], showEdit: boolean = true): string {
   if (cattle.length === 0) return "";
-  return cattle.map(c => `
-    <tr>
+  return cattle.map(c => {
+    const isDeceased = c.status === "Deceased";
+    const rowClass = isDeceased ? ' class="row-deceased"' : '';
+    return `
+    <tr${rowClass}>
       <td><a href="/cattle/${c.id}" class="tag-link">${escapeHTML(c.tag_number)}</a></td>
       <td class="eid-cell">${escapeHTML(c.eid_tag || "—")}</td>
       <td>${escapeHTML(c.breed || "—")}</td>
       <td>${sexBadge(c.sex)}</td>
+      <td>${statusBadge(c.status)}</td>
       <td>${c.pasture_name ? `<a href="/pastures/${c.pasture_id}">${escapeHTML(c.pasture_name)}</a>` : "—"}</td>
       <td>${healthBadge(c.last_health_concern, c.last_health_date, c.last_health_resolved)}</td>
       ${showEdit ? `<td><a href="/cattle/${c.id}/edit" class="btn btn-sm btn-outline">Edit</a></td>` : ""}
     </tr>
-  `).join("");
+  `}).join("");
 }
 
 function pastureOptions(userId: number, selectedId: number | null = null): string {
@@ -152,20 +161,23 @@ function femaleCattleOptions(userId: number, selectedId: number | null = null): 
 
 function allCattleOptions(userId: number, selectedId: number | null = null): string {
   const cattle = getAllCattleOptions(userId);
-  return cattle.map(c =>
-    `<option value="${c.id}"${selectedId === c.id ? " selected" : ""}>${escapeHTML(c.tag_number)} (${escapeHTML(c.sex)})</option>`
-  ).join("");
+  return cattle.map(c => {
+    const status = (c as any).status;
+    const label = status === "Deceased" ? `${escapeHTML(c.tag_number)} (${escapeHTML(c.sex)}) (Deceased)` : `${escapeHTML(c.tag_number)} (${escapeHTML(c.sex)})`;
+    return `<option value="${c.id}"${selectedId === c.id ? " selected" : ""}>${label}</option>`;
+  }).join("");
 }
 
 function cattleFormHTML(
   user: User,
   action: string,
-  defaults: { tag_number?: string; eid_tag?: string; breed?: string; sex?: string; birth_date?: string; pasture_id?: number | null; notes?: string; } = {},
+  defaults: { tag_number?: string; eid_tag?: string; breed?: string; sex?: string; birth_date?: string; pasture_id?: number | null; notes?: string; status?: string; deceased_date?: string; } = {},
   error?: string,
   includeDelete: boolean = false,
   deleteAction?: string
 ): string {
   const isEdit = !!includeDelete;
+  const isDeceased = defaults.status === "Deceased";
 
   return `
     ${error ? `<div class="alert alert-error">${escapeHTML(error)}</div>` : ""}
@@ -206,6 +218,21 @@ function cattleFormHTML(
 
       <label for="notes">Notes</label>
       <textarea id="notes" name="notes" maxlength="500" placeholder="General notes about this animal">${escapeHTML(defaults.notes || "")}</textarea>
+
+      ${isEdit ? `
+      <div class="deceased-section">
+        <label class="checkbox-label">
+          <input type="checkbox" name="is_deceased" value="1" id="is_deceased"${isDeceased ? " checked" : ""}
+                 onchange="document.getElementById('deceased_date_group').style.display = this.checked ? '' : 'none'">
+          Mark as Deceased
+        </label>
+        <div id="deceased_date_group" style="${isDeceased ? "" : "display:none"}">
+          <label for="deceased_date">Deceased Date</label>
+          <input type="date" id="deceased_date" name="deceased_date"
+                 value="${escapeHTML(defaults.deceased_date || "")}">
+        </div>
+      </div>
+      ` : ""}
 
       <div class="form-actions">
         <button type="submit" class="btn">${isEdit ? "Update Cattle" : "Save Cattle"}</button>
@@ -522,8 +549,14 @@ function handleLogout(req: Request): Response {
 
 // ─── Cattle List ──────────────────────────────────────────────────────
 
-function handleCattleList(user: User, search?: string, addedTag?: string | null, importSummary?: { imported: number; skipped: number; skippedDetails?: string }): Response {
-  const cattle = getCattleList(user.id, search);
+function handleCattleList(user: User, search?: string, statusFilter?: string, addedTag?: string | null, importSummary?: { imported: number; skipped: number; skippedDetails?: string }): Response {
+  const effectiveFilter = statusFilter || "active";
+  const cattle = getCattleList(user.id, search, effectiveFilter);
+  const deceasedCount = getDeceasedCattleCount(user.id);
+
+  // Compute counts for the filter tabs
+  const activeCount = effectiveFilter === "active" ? cattle.length : getCattleList(user.id, undefined, "active").length;
+  const allCount = activeCount + deceasedCount;
 
   let banner = "";
   if (addedTag) {
@@ -542,6 +575,16 @@ function handleCattleList(user: User, search?: string, addedTag?: string | null,
     }
   }
 
+  // Determine which count to show
+  let countLabel = "";
+  if (effectiveFilter === "deceased") {
+    countLabel = `<strong>${cattle.length}</strong> deceased`;
+  } else if (effectiveFilter === "all") {
+    countLabel = `<strong>${cattle.length}</strong> total`;
+  } else {
+    countLabel = `<strong>${cattle.length}</strong> active`;
+  }
+
   let body = "";
 
   // Search bar and add button
@@ -549,13 +592,19 @@ function handleCattleList(user: User, search?: string, addedTag?: string | null,
     <div class="list-header">
       <div class="list-header-top">
         <a href="/cattle/add" class="btn">+ Add Cattle</a>
-        <span class="cattle-count">Showing <strong>${cattle.length}</strong> cattle</span>
+        <span class="cattle-count">Showing ${countLabel} cattle</span>
+      </div>
+      <div class="status-filter">
+        <a href="/cattle?status=active" class="filter-tab${effectiveFilter === 'active' ? ' filter-tab-active' : ''}">Active</a>
+        <a href="/cattle?status=deceased" class="filter-tab${effectiveFilter === 'deceased' ? ' filter-tab-active' : ''}">Deceased${deceasedCount > 0 ? ` (${deceasedCount})` : ''}</a>
+        <a href="/cattle?status=all" class="filter-tab${effectiveFilter === 'all' ? ' filter-tab-active' : ''}">All</a>
       </div>
       <form method="GET" action="/cattle" class="search-form">
+        <input type="hidden" name="status" value="${escapeHTML(effectiveFilter)}">
         <input type="search" name="search" placeholder="Search by tag, EID, breed, or notes…"
                value="${escapeHTML(search || "")}" class="search-input">
         <button type="submit" class="btn btn-sm">Search</button>
-        ${search ? `<a href="/cattle" class="btn btn-sm btn-outline">Clear</a>` : ""}
+        ${search ? `<a href="/cattle?status=${escapeHTML(effectiveFilter)}" class="btn btn-sm btn-outline">Clear</a>` : ""}
       </form>
     </div>
   `;
@@ -565,7 +614,7 @@ function handleCattleList(user: User, search?: string, addedTag?: string | null,
   if (cattle.length === 0) {
     body += `
       <div class="empty-state">
-        <p>${search ? "No cattle match your search." : "No cattle recorded yet."}</p>
+        <p>${search ? "No cattle match your search." : (effectiveFilter === 'deceased' ? "No deceased cattle recorded." : "No cattle recorded yet.")}</p>
         ${!search ? `<a href="/cattle/add" class="btn">Add Your First Cattle</a>` : ""}
       </div>
     `;
@@ -579,6 +628,7 @@ function handleCattleList(user: User, search?: string, addedTag?: string | null,
               <th>EID</th>
               <th>Breed</th>
               <th>Sex</th>
+              <th>Status</th>
               <th>Pasture</th>
               <th>Health</th>
               <th>Actions</th>
@@ -678,22 +728,42 @@ function handleCattleDetail(user: User, id: number): Response {
   const healthRecords = getHealthRecordsForCattle(user.id, id);
   const breedingRecords = getBreedingRecordsForCattle(user.id, id);
 
+  // Calculate longevity if deceased
+  let longevityHTML = "";
+  if (cattle.status === "Deceased" && cattle.birth_date && cattle.deceased_date) {
+    const birthDate = new Date(cattle.birth_date);
+    const deceasedDate = new Date(cattle.deceased_date);
+    if (!isNaN(birthDate.getTime()) && !isNaN(deceasedDate.getTime())) {
+      let years = deceasedDate.getFullYear() - birthDate.getFullYear();
+      let months = deceasedDate.getMonth() - birthDate.getMonth();
+      if (months < 0) { years--; months += 12; }
+      longevityHTML = `<div class="detail-item"><span class="detail-label">Lived</span><span class="detail-value detail-longevity">${years} year${years !== 1 ? "s" : ""}, ${months} month${months !== 1 ? "s" : ""}</span></div>`;
+    }
+  }
+
   let body = "";
 
   // Info card
   body += `<div class="detail-card">`;
   body += `<div class="detail-header">`;
-  body += `<h2>${escapeHTML(cattle.tag_number)} ${sexBadge(cattle.sex)}</h2>`;
+  body += `<h2>${escapeHTML(cattle.tag_number)} ${sexBadge(cattle.sex)} ${statusBadge(cattle.status)}</h2>`;
   body += `<div class="detail-actions">`;
   body += `<a href="/cattle/${id}/edit" class="btn btn-sm">Edit</a>`;
   body += `<a href="/cattle" class="btn btn-sm btn-outline">← Back</a>`;
   body += `</div></div>`;
 
   body += `<div class="detail-grid">`;
+  body += `<div class="detail-item"><span class="detail-label">Status</span><span class="detail-value">${statusBadge(cattle.status)}</span></div>`;
   body += `<div class="detail-item"><span class="detail-label">EID Tag</span><span class="detail-value">${escapeHTML(cattle.eid_tag || "—")}</span></div>`;
   body += `<div class="detail-item"><span class="detail-label">Breed</span><span class="detail-value">${escapeHTML(cattle.breed || "—")}</span></div>`;
   body += `<div class="detail-item"><span class="detail-label">Birth Date</span><span class="detail-value">${formatDate(cattle.birth_date)}</span></div>`;
+  if (cattle.status === "Deceased" && cattle.deceased_date) {
+    body += `<div class="detail-item"><span class="detail-label">Deceased Date</span><span class="detail-value detail-deceased-date">${escapeHTML(cattle.deceased_date)}</span></div>`;
+  }
   body += `<div class="detail-item"><span class="detail-label">Pasture</span><span class="detail-value">${cattle.pasture_name ? `<a href="/pastures/${cattle.pasture_id}">${escapeHTML(cattle.pasture_name)}</a>` : "—"}</span></div>`;
+  if (longevityHTML) {
+    body += longevityHTML;
+  }
   body += `</div>`;
 
   if (cattle.notes) {
@@ -702,7 +772,7 @@ function handleCattleDetail(user: User, id: number): Response {
 
   // Quick action buttons
   body += `<div class="detail-actions mt-1">`;
-  if (cattle.sex === "Cow" || cattle.sex === "Heifer") {
+  if (cattle.status === "Active" && (cattle.sex === "Cow" || cattle.sex === "Heifer")) {
     body += `<a href="/breeding?form=1" class="btn btn-sm">🐄 Record Breeding</a>`;
   }
   body += `<a href="/health?form=1" class="btn btn-sm">🩺 Add Health Concern</a>`;
@@ -772,6 +842,8 @@ function handleCattleEditForm(user: User, id: number, error?: string): Response 
       birth_date: cattle.birth_date || "",
       pasture_id: cattle.pasture_id,
       notes: cattle.notes,
+      status: cattle.status,
+      deceased_date: cattle.deceased_date || "",
     },
     error,
     true,
@@ -793,6 +865,10 @@ async function handleCattleUpdate(user: User, req: Request, id: number): Promise
   const birth_date = formData.get("birth_date")?.toString().trim() || null;
   const pasture_id_raw = formData.get("pasture_id")?.toString().trim();
   const notes = formData.get("notes")?.toString().trim() || "";
+  const is_deceased = formData.get("is_deceased") === "1";
+  const deceased_date = formData.get("deceased_date")?.toString().trim() || null;
+
+  const status = is_deceased ? "Deceased" : "Active";
 
   if (!tag_number || !sex) {
     return handleCattleEditForm(user, id, "Tag number and sex are required.");
@@ -806,7 +882,7 @@ async function handleCattleUpdate(user: User, req: Request, id: number): Promise
   const pasture_id = pasture_id_raw ? parseInt(pasture_id_raw, 10) : null;
 
   try {
-    updateCattle(user.id, id, { tag_number, eid_tag, breed, sex, birth_date, pasture_id, notes });
+    updateCattle(user.id, id, { tag_number, eid_tag, breed, sex, birth_date, pasture_id, notes, status, deceased_date: is_deceased ? deceased_date : null });
   } catch (err: any) {
     if (err.message?.includes("UNIQUE")) {
       return handleCattleEditForm(user, id, `Tag number "${tag_number}" is already in use by another animal.`);
@@ -1417,8 +1493,8 @@ async function handleExportDownload(user: User): Promise<Response> {
   // Sheet 1: Cattle
   buildSheet(
     "Cattle",
-    ["Tag Number", "EID Tag", "Breed", "Sex", "Birth Date", "Pasture", "Health Status", "Notes"],
-    [15, 18, 15, 10, 15, 20, 30, 30],
+    ["Tag Number", "EID Tag", "Breed", "Sex", "Birth Date", "Pasture", "Health Status", "Status", "Deceased Date", "Notes"],
+    [15, 18, 15, 10, 15, 20, 30, 12, 15, 30],
     data.cattle.map((c) => [
       c.tag_number,
       c.eid_tag || "",
@@ -1427,9 +1503,11 @@ async function handleExportDownload(user: User): Promise<Response> {
       c.birth_date,
       c.pasture_name,
       c.health_status,
+      c.status,
+      c.deceased_date || "",
       c.notes || "",
     ]),
-    [5],
+    [5, 9],
   );
 
   // Sheet 2: Breeding Records
@@ -1926,6 +2004,7 @@ const server = Bun.serve({
         return handleCattleList(
           user,
           url.searchParams.get("search") || undefined,
+          url.searchParams.get("status") || undefined,
           url.searchParams.get("added"),
           importSummary
         );

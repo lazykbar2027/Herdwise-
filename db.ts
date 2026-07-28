@@ -89,4 +89,7 @@ export function initDB() {
   try { db.exec(`ALTER TABLE users ADD COLUMN subscribed INTEGER DEFAULT 0`); } catch (_) { /* already exists */ }
   // Migration: add EID tag support
   try { db.exec(`ALTER TABLE cattle ADD COLUMN eid_tag TEXT`); } catch (_) { /* already exists */ }
+  // Migration: add deceased tracking
+  try { db.exec(`ALTER TABLE cattle ADD COLUMN status TEXT DEFAULT 'Active'`); } catch (_) { /* already exists */ }
+  try { db.exec(`ALTER TABLE cattle ADD COLUMN deceased_date TEXT`); } catch (_) { /* already exists */ }
 }
