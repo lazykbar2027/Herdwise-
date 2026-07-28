@@ -11,7 +11,7 @@ import {
   getBreedingRecordById, createBreedingRecord, createCalf, deleteBreedingRecord,
   getFemaleCattle, getAllCattleOptions,
   getFullExportData,
-  importCattle, getCattleByTag, getPastureByName,
+  importCattle, getCattleByTag, getCattleByEid, getPastureByName,
 } from "./queries";
 import {
   hashPassword, verifyPassword, createSession,
@@ -126,6 +126,7 @@ function cattleTableRows(cattle: CattleListRow[], showEdit: boolean = true): str
   return cattle.map(c => `
     <tr>
       <td><a href="/cattle/${c.id}" class="tag-link">${escapeHTML(c.tag_number)}</a></td>
+      <td class="eid-cell">${escapeHTML(c.eid_tag || "—")}</td>
       <td>${escapeHTML(c.breed || "—")}</td>
       <td>${sexBadge(c.sex)}</td>
       <td>${c.pasture_name ? `<a href="/pastures/${c.pasture_id}">${escapeHTML(c.pasture_name)}</a>` : "—"}</td>
@@ -159,7 +160,7 @@ function allCattleOptions(userId: number, selectedId: number | null = null): str
 function cattleFormHTML(
   user: User,
   action: string,
-  defaults: { tag_number?: string; breed?: string; sex?: string; birth_date?: string; pasture_id?: number | null; notes?: string; } = {},
+  defaults: { tag_number?: string; eid_tag?: string; breed?: string; sex?: string; birth_date?: string; pasture_id?: number | null; notes?: string; } = {},
   error?: string,
   includeDelete: boolean = false,
   deleteAction?: string
@@ -171,7 +172,14 @@ function cattleFormHTML(
     <form method="POST" action="${action}" class="cattle-form">
       <label for="tag_number">Tag Number *</label>
       <input type="text" id="tag_number" name="tag_number" required maxlength="50"
-             value="${escapeHTML(defaults.tag_number || "")}" autofocus>
+             value="${escapeHTML(defaults.tag_number || "")}" ${!isEdit ? "autofocus" : ""}>
+
+      <label for="eid_tag">EID Tag</label>
+      <input type="text" id="eid_tag" name="eid_tag" maxlength="50"
+             value="${escapeHTML(defaults.eid_tag || "")}"
+             ${isEdit ? "autofocus" : ""}
+             placeholder="15-digit RFID tag number">
+      <p class="form-hint">Scan EID tag or type manually</p>
 
       <label for="breed">Breed</label>
       <input type="text" id="breed" name="breed" maxlength="100" placeholder="e.g. Angus, Hereford"
@@ -221,6 +229,7 @@ const previewDataByUser = new Map<number, ImportRecord[]>();
 
 interface ImportRecord {
   tag_number: string;
+  eid_tag: string;
   breed: string;
   sex: string;
   birth_date: string | null;
@@ -234,7 +243,8 @@ function normalizeHeader(h: string): string {
   const lower = h.toLowerCase().trim();
   // Remove non-alphanumeric chars for comparison
   const clean = lower.replace(/[^a-z0-9]/g, "");
-  if (/tag|tagnumber|id|cattle.?id/.test(clean) && !/pasture/.test(clean)) return "tag_number";
+  if (/tag|tagnumber|id|cattle.?id/.test(clean) && !/pasture/.test(clean) && !/eid|rfid/.test(clean) && !/electronic/.test(clean)) return "tag_number";
+  if (/eid|rfid|electronictag/.test(clean)) return "eid_tag";
   if (/breed/.test(clean)) return "breed";
   if (/sex|gender/.test(clean)) return "sex";
   if (/birth|dob|birthdate|date.?of.?birth/.test(clean)) return "birth_date";
@@ -542,7 +552,7 @@ function handleCattleList(user: User, search?: string, addedTag?: string | null,
         <span class="cattle-count">Showing <strong>${cattle.length}</strong> cattle</span>
       </div>
       <form method="GET" action="/cattle" class="search-form">
-        <input type="search" name="search" placeholder="Search by tag, breed, or notes…"
+        <input type="search" name="search" placeholder="Search by tag, EID, breed, or notes…"
                value="${escapeHTML(search || "")}" class="search-input">
         <button type="submit" class="btn btn-sm">Search</button>
         ${search ? `<a href="/cattle" class="btn btn-sm btn-outline">Clear</a>` : ""}
@@ -566,6 +576,7 @@ function handleCattleList(user: User, search?: string, addedTag?: string | null,
           <thead>
             <tr>
               <th>Tag #</th>
+              <th>EID</th>
               <th>Breed</th>
               <th>Sex</th>
               <th>Pasture</th>
@@ -589,6 +600,7 @@ function handleCattleList(user: User, search?: string, addedTag?: string | null,
 function handleCattleAddForm(user: User, error?: string, defaults?: Record<string, string>): Response {
   return htmlPage("Add Cattle", cattleFormHTML(user, "/cattle", {
     tag_number: defaults?.tag_number || "",
+    eid_tag: defaults?.eid_tag || "",
     breed: defaults?.breed || "",
     sex: defaults?.sex || "",
     birth_date: defaults?.birth_date || "",
@@ -602,6 +614,7 @@ function handleCattleAddForm(user: User, error?: string, defaults?: Record<strin
 async function handleCattleCreate(user: User, req: Request): Promise<Response> {
   const formData = await req.formData();
   const tag_number = formData.get("tag_number")?.toString().trim();
+  const eid_tag = formData.get("eid_tag")?.toString().trim() || null;
   const breed = formData.get("breed")?.toString().trim() || "";
   const sex = formData.get("sex")?.toString().trim();
   const birth_date = formData.get("birth_date")?.toString().trim() || null;
@@ -612,6 +625,7 @@ async function handleCattleCreate(user: User, req: Request): Promise<Response> {
   if (!tag_number || !sex) {
     return handleCattleAddForm(user, "Tag number and sex are required.", {
       tag_number: tag_number || "",
+      eid_tag: eid_tag || "",
       breed,
       sex: sex || "",
       birth_date: birth_date || "",
@@ -624,6 +638,7 @@ async function handleCattleCreate(user: User, req: Request): Promise<Response> {
   if (!validSexes.includes(sex)) {
     return handleCattleAddForm(user, "Invalid sex value.", {
       tag_number,
+      eid_tag: eid_tag || "",
       breed,
       sex,
       birth_date: birth_date || "",
@@ -635,11 +650,12 @@ async function handleCattleCreate(user: User, req: Request): Promise<Response> {
   const pasture_id = pasture_id_raw ? parseInt(pasture_id_raw, 10) : null;
 
   try {
-    createCattle(user.id, { tag_number, breed, sex, birth_date, pasture_id, notes });
+    createCattle(user.id, { tag_number, eid_tag, breed, sex, birth_date, pasture_id, notes });
   } catch (err: any) {
     if (err.message?.includes("UNIQUE")) {
       return handleCattleAddForm(user, `A cattle with tag number "${tag_number}" already exists.`, {
         tag_number: "",
+        eid_tag: eid_tag || "",
         breed,
         sex,
         birth_date: birth_date || "",
@@ -674,6 +690,7 @@ function handleCattleDetail(user: User, id: number): Response {
   body += `</div></div>`;
 
   body += `<div class="detail-grid">`;
+  body += `<div class="detail-item"><span class="detail-label">EID Tag</span><span class="detail-value">${escapeHTML(cattle.eid_tag || "—")}</span></div>`;
   body += `<div class="detail-item"><span class="detail-label">Breed</span><span class="detail-value">${escapeHTML(cattle.breed || "—")}</span></div>`;
   body += `<div class="detail-item"><span class="detail-label">Birth Date</span><span class="detail-value">${formatDate(cattle.birth_date)}</span></div>`;
   body += `<div class="detail-item"><span class="detail-label">Pasture</span><span class="detail-value">${cattle.pasture_name ? `<a href="/pastures/${cattle.pasture_id}">${escapeHTML(cattle.pasture_name)}</a>` : "—"}</span></div>`;
@@ -749,6 +766,7 @@ function handleCattleEditForm(user: User, id: number, error?: string): Response 
     `/cattle/${id}`,
     {
       tag_number: cattle.tag_number,
+      eid_tag: cattle.eid_tag || "",
       breed: cattle.breed,
       sex: cattle.sex,
       birth_date: cattle.birth_date || "",
@@ -769,6 +787,7 @@ async function handleCattleUpdate(user: User, req: Request, id: number): Promise
 
   const formData = await req.formData();
   const tag_number = formData.get("tag_number")?.toString().trim();
+  const eid_tag = formData.get("eid_tag")?.toString().trim() || null;
   const breed = formData.get("breed")?.toString().trim() || "";
   const sex = formData.get("sex")?.toString().trim();
   const birth_date = formData.get("birth_date")?.toString().trim() || null;
@@ -787,7 +806,7 @@ async function handleCattleUpdate(user: User, req: Request, id: number): Promise
   const pasture_id = pasture_id_raw ? parseInt(pasture_id_raw, 10) : null;
 
   try {
-    updateCattle(user.id, id, { tag_number, breed, sex, birth_date, pasture_id, notes });
+    updateCattle(user.id, id, { tag_number, eid_tag, breed, sex, birth_date, pasture_id, notes });
   } catch (err: any) {
     if (err.message?.includes("UNIQUE")) {
       return handleCattleEditForm(user, id, `Tag number "${tag_number}" is already in use by another animal.`);
@@ -930,6 +949,7 @@ function handlePastureDetail(user: User, id: number, search?: string): Response 
           <thead>
             <tr>
               <th>Tag #</th>
+              <th>EID</th>
               <th>Breed</th>
               <th>Sex</th>
               <th>Health</th>
@@ -1397,10 +1417,11 @@ async function handleExportDownload(user: User): Promise<Response> {
   // Sheet 1: Cattle
   buildSheet(
     "Cattle",
-    ["Tag Number", "Breed", "Sex", "Birth Date", "Pasture", "Health Status", "Notes"],
-    [15, 15, 10, 15, 20, 30, 30],
+    ["Tag Number", "EID Tag", "Breed", "Sex", "Birth Date", "Pasture", "Health Status", "Notes"],
+    [15, 18, 15, 10, 15, 20, 30, 30],
     data.cattle.map((c) => [
       c.tag_number,
+      c.eid_tag || "",
       c.breed || "",
       c.sex,
       c.birth_date,
@@ -1408,7 +1429,7 @@ async function handleExportDownload(user: User): Promise<Response> {
       c.health_status,
       c.notes || "",
     ]),
-    [4],
+    [5],
   );
 
   // Sheet 2: Breeding Records
@@ -1468,6 +1489,7 @@ function handleImportPage(user: User, error?: string): Response {
           <thead><tr><th>Column</th><th>Aliases</th><th>Required</th></tr></thead>
           <tbody>
             <tr><td><strong>Tag Number</strong></td><td>Tag #, tag_number, tag, ID</td><td class="required-badge">✅ Required</td></tr>
+            <tr><td>EID Tag</td><td>EID, RFID, Electronic Tag</td><td>Optional</td></tr>
             <tr><td>Breed</td><td>breed</td><td>Optional</td></tr>
             <tr><td>Sex</td><td>Gender</td><td>Optional (Bull/Cow/Steer/Heifer)</td></tr>
             <tr><td>Birth Date</td><td>DOB, Date of Birth, birth_date</td><td>Optional</td></tr>
@@ -1549,6 +1571,7 @@ async function handleImportPreview(user: User, req: Request): Promise<Response> 
   for (const row of dataRows) {
     const record: ImportRecord = {
       tag_number: "",
+      eid_tag: "",
       breed: "",
       sex: "",
       birth_date: null,
@@ -1563,6 +1586,7 @@ async function handleImportPreview(user: User, req: Request): Promise<Response> 
 
       switch (field) {
         case "tag_number": record.tag_number = value; break;
+        case "eid_tag": record.eid_tag = value; break;
         case "breed": record.breed = value; break;
         case "sex": record.sex = normalizeSex(value); break;
         case "birth_date": record.birth_date = value || null; break;
@@ -1624,7 +1648,7 @@ async function handleImportPreview(user: User, req: Request): Promise<Response> 
   body += `<h3 class="mt-1">Preview (first ${previewRows.length} row${previewRows.length !== 1 ? "s" : ""})</h3>`;
   body += `<div class="table-wrapper"><table class="import-preview-table">`;
   body += `<thead><tr>
-    <th>#</th><th>Tag Number</th><th>Breed</th><th>Sex</th><th>Birth Date</th><th>Pasture</th><th>Notes</th><th>Status</th>
+    <th>#</th><th>Tag Number</th><th>EID Tag</th><th>Breed</th><th>Sex</th><th>Birth Date</th><th>Pasture</th><th>Notes</th><th>Status</th>
   </tr></thead><tbody>`;
 
   body += previewRows.map((r, i) => {
@@ -1635,6 +1659,7 @@ async function handleImportPreview(user: User, req: Request): Promise<Response> 
       <tr class="${r.errors.length > 0 ? "import-row-error" : ""}">
         <td>${i + 1}</td>
         <td><strong>${escapeHTML(r.tag_number || "—")}</strong></td>
+        <td>${escapeHTML(r.eid_tag || "—")}</td>
         <td>${escapeHTML(r.breed || "—")}</td>
         <td>${escapeHTML(r.sex || "—")}</td>
         <td>${escapeHTML(r.birth_date || "—")}</td>
@@ -1681,6 +1706,7 @@ function handleImportExecute(user: User): Response {
     }
     return {
       tag_number: r.tag_number,
+      eid_tag: r.eid_tag || null,
       breed: r.breed || "",
       sex: r.sex || "",
       birth_date: r.birth_date,
@@ -1760,6 +1786,84 @@ function handleSubscribePage(user: User): Response {
   return htmlPage("Subscribe", body, user);
 }
 
+// ─── Scan Page ────────────────────────────────────────────────────────
+
+function handleScanPage(user: User): Response {
+  let body = `<div class="scan-page">
+    <div class="scan-card">
+      <h2>📡 EID Tag Scanner</h2>
+      <p class="scan-hint">Scan an EID tag with your Bluetooth wand or type the 15-digit number.</p>
+      <form method="POST" action="/scan" class="scan-form">
+        <input type="text" id="scan-eid" name="eid" class="scan-input"
+               placeholder="Scan EID tag…" autofocus autocomplete="off">
+        <button type="submit" class="btn btn-download scan-btn">🔍 Look Up</button>
+      </form>
+      <p class="scan-footer">
+        <a href="/cattle">← Back to Cattle</a>
+      </p>
+    </div>
+  </div>`;
+
+  return htmlPage("Scan EID Tag", body, user);
+}
+
+function handleScanLookup(user: User, eid: string): Response {
+  const cattle = getCattleByEid(user.id, eid.trim());
+
+  if (!cattle) {
+    let body = `<div class="scan-page">
+      <div class="scan-result scan-not-found">
+        <h2>🔍 EID Not Found</h2>
+        <p class="scan-eid-display">EID: <strong>${escapeHTML(eid.trim())}</strong></p>
+        <p class="scan-message">No cattle found with this EID tag.</p>
+        <div class="scan-actions">
+          <a href="/cattle/add?eid=${encodeURIComponent(eid.trim())}" class="btn btn-download">➕ Add New Cattle</a>
+          <a href="/scan" class="btn btn-outline">Scan Another</a>
+        </div>
+        <p class="scan-footer">
+          <a href="/cattle">← Back to Cattle</a>
+        </p>
+      </div>
+    </div>`;
+
+    return htmlPage("EID Not Found", body, user);
+  }
+
+  // Found — show detail card
+  let body = `<div class="scan-page">
+    <div class="scan-result scan-found">
+      <h2>✅ Cattle Found</h2>
+      <p class="scan-eid-display">EID: <strong>${escapeHTML(eid.trim())}</strong></p>
+
+      <div class="detail-card">
+        <div class="detail-header">
+          <h2>${escapeHTML(cattle.tag_number)} ${sexBadge(cattle.sex)}</h2>
+        </div>
+
+        <div class="detail-grid">
+          <div class="detail-item"><span class="detail-label">Breed</span><span class="detail-value">${escapeHTML(cattle.breed || "—")}</span></div>
+          <div class="detail-item"><span class="detail-label">Birth Date</span><span class="detail-value">${formatDate(cattle.birth_date)}</span></div>
+          <div class="detail-item"><span class="detail-label">Pasture</span><span class="detail-value">${cattle.pasture_name ? escapeHTML(cattle.pasture_name) : "—"}</span></div>
+          <div class="detail-item"><span class="detail-label">Health</span><span class="detail-value">${healthBadge(cattle.last_health_concern, cattle.last_health_date, cattle.last_health_resolved)}</span></div>
+        </div>
+
+        ${cattle.notes ? `<div class="detail-notes"><span class="detail-label">Notes</span><p>${escapeHTML(cattle.notes)}</p></div>` : ""}
+
+        <div class="detail-actions mt-1">
+          <a href="/cattle/${cattle.id}" class="btn">View Full Details</a>
+          <a href="/cattle/${cattle.id}/edit" class="btn btn-outline">Edit</a>
+        </div>
+      </div>
+
+      <div class="scan-actions mt-1">
+        <a href="/scan" class="btn btn-download">Scan Another</a>
+      </div>
+    </div>
+  </div>`;
+
+  return htmlPage(cattle.tag_number, body, user);
+}
+
 // ─── Server ───────────────────────────────────────────────────────────
 
 const server = Bun.serve({
@@ -1826,7 +1930,9 @@ const server = Bun.serve({
           importSummary
         );
       }
-      if (pathname === "/cattle/add") return handleCattleAddForm(user);
+      if (pathname === "/cattle/add") return handleCattleAddForm(user, undefined, {
+        eid_tag: url.searchParams.get("eid") || undefined,
+      });
       if (pathname === "/pastures") return handlePasturesList(user);
       if (pathname === "/health") return handleHealthOverview(
         user,
@@ -1840,6 +1946,7 @@ const server = Bun.serve({
       if (pathname === "/export/download") return await handleExportDownload(user);
       if (pathname === "/import") return handleImportPage(user);
       if (pathname === "/subscribe") return handleSubscribePage(user);
+      if (pathname === "/scan") return handleScanPage(user);
 
       // Dynamic GET routes
       const cattleDetailMatch = pathname.match(/^\/cattle\/(\d+)$/);
@@ -1868,6 +1975,13 @@ const server = Bun.serve({
 
       if (pathname === "/import/preview") return await handleImportPreview(user, req);
       if (pathname === "/import") return handleImportExecute(user);
+
+      if (pathname === "/scan") {
+        const formData = await req.formData();
+        const eid = formData.get("eid")?.toString().trim();
+        if (!eid) return redirect("/scan");
+        return handleScanLookup(user, eid);
+      }
 
       const cattleUpdateMatch = pathname.match(/^\/cattle\/(\d+)$/);
       if (cattleUpdateMatch) return handleCattleUpdate(user, req, parseInt(cattleUpdateMatch[1]!, 10));

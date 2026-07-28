@@ -33,6 +33,7 @@ export function renderPage(title: string, bodyHTML: string, user?: PageUser | nu
         <a href="/breeding">Breeding</a>
         <a href="/health">Health</a>
         <a href="/import">Import</a>
+        <a href="/scan">Scan</a>
         <a href="/export">Export</a>
         <span class="nav-user">${escapeHTML(user.email)}</span>
         ${trialBadge}

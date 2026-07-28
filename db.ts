@@ -87,4 +87,6 @@ export function initDB() {
   // Migration: add trial/subscription columns (safe to run on existing DBs)
   try { db.exec(`ALTER TABLE users ADD COLUMN trial_ends_at TEXT`); } catch (_) { /* already exists */ }
   try { db.exec(`ALTER TABLE users ADD COLUMN subscribed INTEGER DEFAULT 0`); } catch (_) { /* already exists */ }
+  // Migration: add EID tag support
+  try { db.exec(`ALTER TABLE cattle ADD COLUMN eid_tag TEXT`); } catch (_) { /* already exists */ }
 }

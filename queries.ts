@@ -5,6 +5,7 @@ import { db } from "./db";
 export interface CattleListRow {
   id: number;
   tag_number: string;
+  eid_tag: string | null;
   breed: string;
   sex: string;
   birth_date: string | null;
@@ -21,6 +22,7 @@ export interface CattleListRow {
 export interface CattleDetailRow {
   id: number;
   tag_number: string;
+  eid_tag: string | null;
   breed: string;
   sex: string;
   birth_date: string | null;
@@ -61,7 +63,7 @@ export interface BreedingRecordRow {
 // ─── Cattle Queries ───────────────────────────────────────────────────
 
 const CATTLE_LIST_SELECT = `
-  SELECT c.id, c.tag_number, c.breed, c.sex, c.birth_date,
+  SELECT c.id, c.tag_number, c.eid_tag, c.breed, c.sex, c.birth_date,
          c.pasture_id, p.name as pasture_name, c.notes,
          (SELECT hr.concern FROM health_records hr
           WHERE hr.cattle_id = c.id ORDER BY hr.date DESC LIMIT 1) as last_health_concern,
@@ -80,9 +82,9 @@ export function getCattleList(userId: number, search?: string): CattleListRow[] 
 
   if (search && search.trim().length > 0) {
     const term = `%${search.trim()}%`;
-    sql += ` AND (c.tag_number LIKE ? OR c.breed LIKE ? OR c.notes LIKE ?)`;
+    sql += ` AND (c.tag_number LIKE ? OR c.eid_tag LIKE ? OR c.breed LIKE ? OR c.notes LIKE ?)`;
     sql += ` ORDER BY c.tag_number`;
-    return db.query(sql).all(userId, term, term, term) as CattleListRow[];
+    return db.query(sql).all(userId, term, term, term, term) as CattleListRow[];
   }
 
   sql += ` ORDER BY c.tag_number`;
@@ -91,7 +93,7 @@ export function getCattleList(userId: number, search?: string): CattleListRow[] 
 
 export function getCattleById(userId: number, id: number): CattleDetailRow | null {
   return db.query(`
-    SELECT c.id, c.tag_number, c.breed, c.sex, c.birth_date,
+    SELECT c.id, c.tag_number, c.eid_tag, c.breed, c.sex, c.birth_date,
            c.pasture_id, p.name as pasture_name, c.notes,
            c.created_at, c.updated_at
     FROM cattle c
@@ -102,6 +104,7 @@ export function getCattleById(userId: number, id: number): CattleDetailRow | nul
 
 export function createCattle(userId: number, data: {
   tag_number: string;
+  eid_tag: string | null;
   breed: string;
   sex: string;
   birth_date: string | null;
@@ -109,14 +112,15 @@ export function createCattle(userId: number, data: {
   notes: string;
 }): void {
   db.run(
-    `INSERT INTO cattle (user_id, tag_number, breed, sex, birth_date, pasture_id, notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [userId, data.tag_number, data.breed, data.sex, data.birth_date, data.pasture_id, data.notes]
+    `INSERT INTO cattle (user_id, tag_number, eid_tag, breed, sex, birth_date, pasture_id, notes)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [userId, data.tag_number, data.eid_tag, data.breed, data.sex, data.birth_date, data.pasture_id, data.notes]
   );
 }
 
 export function updateCattle(userId: number, id: number, data: {
   tag_number: string;
+  eid_tag: string | null;
   breed: string;
   sex: string;
   birth_date: string | null;
@@ -124,10 +128,10 @@ export function updateCattle(userId: number, id: number, data: {
   notes: string;
 }): void {
   db.run(
-    `UPDATE cattle SET tag_number = ?, breed = ?, sex = ?, birth_date = ?,
+    `UPDATE cattle SET tag_number = ?, eid_tag = ?, breed = ?, sex = ?, birth_date = ?,
      pasture_id = ?, notes = ?, updated_at = datetime('now')
      WHERE id = ? AND user_id = ?`,
-    [data.tag_number, data.breed, data.sex, data.birth_date, data.pasture_id, data.notes, id, userId]
+    [data.tag_number, data.eid_tag, data.breed, data.sex, data.birth_date, data.pasture_id, data.notes, id, userId]
   );
 }
 
@@ -141,9 +145,9 @@ export function getCattleInPasture(userId: number, pastureId: number, search?: s
 
   if (search && search.trim().length > 0) {
     const term = `%${search.trim()}%`;
-    sql += ` AND (c.tag_number LIKE ? OR c.breed LIKE ? OR c.notes LIKE ?)`;
+    sql += ` AND (c.tag_number LIKE ? OR c.eid_tag LIKE ? OR c.breed LIKE ? OR c.notes LIKE ?)`;
     sql += ` ORDER BY c.tag_number`;
-    return db.query(sql).all(pastureId, userId, term, term, term) as CattleListRow[];
+    return db.query(sql).all(pastureId, userId, term, term, term, term) as CattleListRow[];
   }
 
   sql += ` ORDER BY c.tag_number`;
@@ -323,8 +327,14 @@ export function getCattleByTag(userId: number, tag: string): { id: number } | nu
   return db.query(`SELECT id FROM cattle WHERE user_id = ? AND tag_number = ?`).get(userId, tag) as { id: number } | null;
 }
 
+export function getCattleByEid(userId: number, eidTag: string): CattleListRow | null {
+  const sql = CATTLE_LIST_SELECT + ` WHERE c.user_id = ? AND c.eid_tag = ?`;
+  return db.query(sql).get(userId, eidTag) as CattleListRow | null;
+}
+
 export function importCattle(userId: number, records: Array<{
   tag_number: string;
+  eid_tag: string | null;
   breed: string;
   sex: string;
   birth_date: string | null;
@@ -332,8 +342,8 @@ export function importCattle(userId: number, records: Array<{
   notes: string;
 }>): { imported: number; skipped: Array<{ tag: string; reason: string }> } {
   const insertStmt = db.prepare(
-    `INSERT INTO cattle (user_id, tag_number, breed, sex, birth_date, pasture_id, notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO cattle (user_id, tag_number, eid_tag, breed, sex, birth_date, pasture_id, notes)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   );
 
   let imported = 0;
@@ -344,6 +354,7 @@ export function importCattle(userId: number, records: Array<{
       insertStmt.run(
         userId,
         record.tag_number,
+        record.eid_tag,
         record.breed,
         record.sex,
         record.birth_date,
@@ -367,6 +378,7 @@ export function importCattle(userId: number, records: Array<{
 
 export interface ExportCattle {
   tag_number: string;
+  eid_tag: string | null;
   breed: string;
   sex: string;
   birth_date: string | null;
@@ -400,7 +412,7 @@ export interface FullExportData {
 
 export function getFullExportData(userId: number): FullExportData {
   const cattle = db.query(`
-    SELECT c.tag_number, c.breed, c.sex, c.birth_date,
+    SELECT c.tag_number, c.eid_tag, c.breed, c.sex, c.birth_date,
            p.name as pasture_name,
            COALESCE(
              (SELECT hr.concern FROM health_records hr
