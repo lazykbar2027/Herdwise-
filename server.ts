@@ -1,5 +1,5 @@
 import { db, initDB } from "./db";
-import { renderPage, escapeHTML } from "./render";
+import { renderPage, renderLandingPage, escapeHTML } from "./render";
 import type { PageUser } from "./render";
 import {
   getCattleList, getCattleById, createCattle, updateCattle, deleteCattle,
@@ -97,6 +97,20 @@ function trialBanner(user: User): string {
 
 function notFound(user?: User | null): Response {
   return htmlPage("Not Found", `<div class="empty-state"><p>Page not found.</p><a href="/cattle">← Back to Cattle</a></div>`, user, 404);
+}
+
+// ─── Public landing page (no auth required) ──────────────────────────
+
+function handleLandingPage(user?: User | null): Response {
+  const isSubscribed = user ? (user.subscribed === 1) : false;
+  const pageUser: PageUser | null = user ? {
+    email: user.email,
+    trialDaysLeft: computeTrialDaysLeft(user),
+    isSubscribed,
+  } : null;
+  return new Response(renderLandingPage(pageUser), {
+    headers: { "Content-Type": "text/html; charset=utf-8" },
+  });
 }
 
 function sexBadge(sex: string): string {
@@ -1963,6 +1977,7 @@ const server = Bun.serve({
       // Already-authenticated check for these pages
       const currentUser = getUserFromSession(req);
 
+      if (pathname === "/") return handleLandingPage(currentUser);
       if (pathname === "/login") return handleLoginPage(undefined, url.searchParams.get("redirect") || undefined, currentUser);
       if (pathname === "/register") return handleRegisterPage(undefined, undefined, currentUser);
     }
@@ -1992,7 +2007,6 @@ const server = Bun.serve({
 
     // GET routes
     if (method === "GET") {
-      if (pathname === "/") return redirect("/cattle");
       if (pathname === "/cattle") {
         const imported = url.searchParams.get("imported");
         const skipped = url.searchParams.get("skipped");

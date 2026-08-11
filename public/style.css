@@ -1429,3 +1429,161 @@ button:disabled, .btn:disabled {
     width: 100%;
   }
 }
+
+/* ─── Public marketing landing page ────────────────────────────────── */
+.landing-hero {
+  background: linear-gradient(135deg, #3d5a1e 0%, #557a2c 55%, #6b8f3a 100%);
+  color: #fff;
+  text-align: center;
+  padding: 4.5rem 1rem 4rem;
+}
+.landing-hero-inner {
+  max-width: 720px;
+  margin: 0 auto;
+}
+.landing-hero h1 {
+  color: #fff;
+  font-size: 2.4rem;
+  line-height: 1.15;
+  margin-bottom: 1rem;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+.landing-sub {
+  font-size: 1.15rem;
+  color: #eef4e0;
+  max-width: 560px;
+  margin: 0 auto 1.75rem;
+}
+.landing-cta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.75rem;
+}
+.landing-btn {
+  font-size: 1.05rem;
+  padding: 0.7rem 1.6rem;
+}
+.landing-hero .btn {
+  background: #fff;
+  color: #3d5a1e;
+  border: none;
+}
+.landing-hero .btn:hover {
+  background: #f0f5e2;
+}
+.landing-hero .btn-outline {
+  background: transparent;
+  color: #fff;
+  border: 2px solid rgba(255, 255, 255, 0.75);
+}
+.landing-hero .btn-outline:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: #fff;
+}
+.landing-section {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 3rem 1rem;
+}
+.landing-section-title {
+  text-align: center;
+  font-size: 1.7rem;
+  margin-bottom: 2rem;
+}
+.landing-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 1rem;
+}
+.landing-card {
+  background: #fff;
+  border: 1px solid #e6ddc8;
+  border-radius: 12px;
+  padding: 1.4rem 1.25rem;
+  box-shadow: 0 2px 6px rgba(61, 90, 30, 0.06);
+}
+.landing-card-icon {
+  font-size: 1.8rem;
+  margin-bottom: 0.6rem;
+}
+.landing-card h3 {
+  color: #3d5a1e;
+  font-size: 1.05rem;
+  margin-bottom: 0.4rem;
+}
+.landing-card p {
+  font-size: 0.92rem;
+  color: #5a4f3a;
+  margin: 0;
+}
+.landing-pricing-section {
+  background: #f3efe4;
+  padding-bottom: 4rem;
+}
+.landing-price-card {
+  max-width: 480px;
+  margin: 0 auto;
+  background: #fff;
+  border: 2px solid #3d5a1e;
+  border-radius: 14px;
+  padding: 2rem 1.75rem;
+  text-align: center;
+  box-shadow: 0 6px 18px rgba(61, 90, 30, 0.12);
+}
+.landing-price {
+  font-size: 1.3rem;
+  color: #2c2416;
+  margin-bottom: 1rem;
+}
+.landing-price strong {
+  color: #3d5a1e;
+  font-size: 1.5rem;
+}
+.landing-price-list {
+  list-style: none;
+  margin: 0 0 1.5rem;
+  padding: 0;
+  text-align: left;
+  display: inline-block;
+}
+.landing-price-list li {
+  padding: 0.3rem 0;
+  color: #4a3f2f;
+}
+.landing-price-card .landing-btn {
+  display: inline-block;
+}
+.landing-note {
+  margin-top: 1rem;
+  font-size: 0.9rem;
+  color: #7a6f58;
+}
+.landing-footer {
+  background: #2c2416;
+  color: #e8e0cc;
+  text-align: center;
+  padding: 1.5rem 1rem;
+  font-size: 0.9rem;
+}
+.landing-footer p {
+  margin: 0;
+}
+
+@media (max-width: 480px) {
+  .landing-hero {
+    padding: 3rem 1rem 2.5rem;
+  }
+  .landing-hero h1 {
+    font-size: 1.8rem;
+  }
+  .landing-sub {
+    font-size: 1rem;
+  }
+  .landing-cta .landing-btn {
+    width: 100%;
+  }
+  .landing-section {
+    padding: 2.25rem 1rem;
+  }
+}
